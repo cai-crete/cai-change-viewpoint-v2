@@ -3,56 +3,10 @@ import { Upload, Moon, Sun, Loader2, Search, Hand, MousePointer2, Compass, Book,
 import { GoogleGenAI } from '@google/genai';
 import { ANALYSIS, IMAGE_GEN, ANALYSIS_FALLBACK, IMAGE_GEN_FALLBACK } from './constants';
 
-// --- Constants for Discrete Parameters ---
+// --- Constants ---
 const ANGLES = ['12:00', '1:30', '3:00', '04:30', '06:00', '07:30', '09:00', '10:30'];
 
-const ALTITUDES = [
-  { label: "-2.0m (Worm's Eye View)", value: -2.0 },
-  { label: "0m (Low Angle View)", value: 0 },
-  { label: "1.6m (Eye Level View)", value: 1.6 },
-  { label: "10m (Low Aerial View)", value: 10 },
-  { label: "50m (Mid Aerial View)", value: 50 },
-  { label: "150m (Bird's Eye View)", value: 150 },
-  { label: "200m (High Angle Orbit)", value: 200 },
-  { label: "300m (Top-Down Aerial View)", value: 300 }
-];
-
-const LENSES = [
-  { label: "23mm (Tilt-Shift Lens)", value: 23 },
-  { label: "24mm (Wide Lens)", value: 24 },
-  { label: "32mm (Aerial Lens)", value: 32 },
-  { label: "35mm (Wide Standard Lens)", value: 35 },
-  { label: "45mm (Standard Lens)", value: 45 },
-  { label: "50mm (Normal Lens)", value: 50 },
-  { label: "85mm (Short Telephoto Lens)", value: 85 },
-  { label: "110mm (Macro Lens)", value: 110 }
-];
-
-const TIMES = ['08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'];
-
-// --- 5-IVSP Protocol Helper ---
-// --- 5-IVSP Protocol Helper ---
-const determineScenario = (angleStr: string, altitude: number, lens: number) => {
-  if (altitude > 150) return '[Scenario B] Aerial View (High Altitude): Phase One + 32mm';
-  if (lens > 85) return '[Scenario C] Detail View (Macro): 110mm Macro';
-  if (angleStr === '04:30' || angleStr === '07:30') return '[Scenario D] General View (Quarter): 45mm Standard';
-  return '[Scenario A] Street View: Fujifilm GFX 100S + 23mm Tilt-Shift';
-};
-
-// V70/V71: Map 5-IVSP Angle to 3x3 Cross Layout Slots
-// NEW Cross Layout: Row0=[_,REAR,_], Row1=[LEFT,TOP,RIGHT], Row2=[_,FRONT,_]
-const getElevationSlot = (angle: string): { row: number; col: number; label: string }[] => {
-  if (angle === '06:00') return [{ row: 2, col: 1, label: 'FRONT' }];
-  if (angle === '12:00') return [{ row: 0, col: 1, label: 'REAR' }];
-  if (angle === '3:00')  return [{ row: 1, col: 2, label: 'RIGHT' }];
-  if (angle === '09:00') return [{ row: 1, col: 0, label: 'LEFT' }];
-  // Corner angles → composite (both adjacent faces)
-  if (angle === '1:30')  return [{ row: 0, col: 1, label: 'REAR' },  { row: 1, col: 2, label: 'RIGHT' }];
-  if (angle === '04:30') return [{ row: 1, col: 2, label: 'RIGHT' }, { row: 2, col: 1, label: 'FRONT' }];
-  if (angle === '07:30') return [{ row: 2, col: 1, label: 'FRONT' }, { row: 1, col: 0, label: 'LEFT' }];
-  if (angle === '10:30') return [{ row: 1, col: 0, label: 'LEFT' },  { row: 0, col: 1, label: 'REAR' }];
-  return [{ row: 2, col: 1, label: 'FRONT' }];
-};
+type ViewType = 'birdEye' | 'eyeLevel' | 'front' | 'rightSide' | 'top';
 
 
 
@@ -164,20 +118,10 @@ interface CanvasItem {
   y: number;
   width: number;
   height: number;
-  // V74: Metadata linking
   motherId: string | null;
   parameters: {
-    angleIndex: number;
-    altitudeIndex: number;
-    lensIndex: number;
-    timeIndex: number;
     analyzedOpticalParams?: any | null;
-    elevationParams?: any | null;
-    sitePlanImage?: string | null;
-    architecturalSheetImage?: string | null;
-    elevationImages?: Record<string, string> | null;
-    bldgRatio?: { width: number; depth: number; height: number } | null;
-    macroAEPL?: Record<string, string> | null; // [V41] Macro-AEPL 도시 맥락 파라미터
+    analysisReport?: any | null;
   } | null;
 }
 
@@ -201,33 +145,27 @@ export default function App() {
   const [isDraggingPan, setIsDraggingPan] = useState(false);
   
 
-  // PRD Parameters
-  const [prompt, setPrompt] = useState('');
-  const [angleIndex, setAngleIndex] = useState<number>(4); // 06:00
-  const [altitudeIndex, setAltitudeIndex] = useState<number>(2); // 1.6m
-  const [lensIndex, setLensIndex] = useState<number>(0); // 23mm
-  const [timeIndex, setTimeIndex] = useState<number>(2); // 12:00
-  const [elevationParams, setElevationParams] = useState<any>(null);
-  const [macroAEPL, setMacroAEPL] = useState<any>(null); // [V41] Macro-AEPL 도시 맥락
-  
-  // Analyzed (Read-only) Parameters for UI Display
+  // View Selection (PHASE 3)
+  const [selectedView, setSelectedView] = useState<ViewType | null>(null);
+  const [birdEyeDirection, setBirdEyeDirection] = useState<'04:30' | '07:30'>('04:30');
+  const [eyeLevelDirection, setEyeLevelDirection] = useState<'04:30' | '07:30'>('04:30');
+  const [frontAltitude, setFrontAltitude] = useState<string>('10');
+  const [rightSideDirection, setRightSideDirection] = useState<'03:00' | '09:00'>('03:00');
+  const [rightSideAltitude, setRightSideAltitude] = useState<string>('10');
+
+  // Analysis Result (PHASE 1)
+  const [analysisReport, setAnalysisReport] = useState<any | null>(null);
   const [analyzedOpticalParams, setAnalyzedOpticalParams] = useState<{
     angle: string;
     altitude: string;
     lens: string;
-    time: string;
   } | null>(null);
-  
+
   // UI State
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [sitePlanImage, setSitePlanImage] = useState<string | null>(null);
-  const [architecturalSheetImage, setArchitecturalSheetImage] = useState<string | null>(null);
-
-  // V25: Extended UI State
   const [analysisStep, setAnalysisStep] = useState<string>('');
-  const [visibleV0Index, setVisibleV0Index] = useState<number | null>(null);
 
   // Zoom & Pan State
   const [canvasZoom, setCanvasZoom] = useState(100);
@@ -259,36 +197,26 @@ export default function App() {
   const [appScale, setAppScale] = useState(1);
 
   // --- Effects ---
-  // V74: Synchronize selected item's parameters to UI panels, and reset on deselect
+  // Synchronize selected item's parameters to UI panels, and reset on deselect
   useEffect(() => {
     if (!selectedItemId) {
-      // Background click -> Reset to default empty state
-      setAngleIndex(4);
-      setAltitudeIndex(2);
-      setLensIndex(0);
-      setTimeIndex(2);
       setAnalyzedOpticalParams(null);
-      setElevationParams(null);
-      setSitePlanImage(null);
-      setArchitecturalSheetImage(null);
+      setAnalysisReport(null);
+      setSelectedView(null);
+      setRightSideDirection('03:00');
       return;
     }
-
     const item = canvasItems.find(i => i.id === selectedItemId);
     if (item && item.parameters) {
-      // Object-oriented state sync
-      setAngleIndex(item.parameters.angleIndex);
-      setAltitudeIndex(item.parameters.altitudeIndex);
-      setLensIndex(item.parameters.lensIndex);
-      setTimeIndex(item.parameters.timeIndex);
       setAnalyzedOpticalParams(item.parameters.analyzedOpticalParams || null);
-      setElevationParams(item.parameters.elevationParams || null);
-      setMacroAEPL(item.parameters.macroAEPL || null); // [V41]
-      setSitePlanImage(item.parameters.sitePlanImage || null);
-      setArchitecturalSheetImage(item.parameters.architecturalSheetImage || null);
+      setAnalysisReport(item.parameters.analysisReport || null);
+      // Auto-determine rightSideDirection from analyzed angle
+      const angle = item.parameters.analyzedOpticalParams?.angle;
+      if (angle === '04:30') setRightSideDirection('03:00');
+      else if (angle === '07:30') setRightSideDirection('09:00');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedItemId]); // only trigger on selection change
+  }, [selectedItemId]);
 
   useEffect(() => {
     // Determine the scale based on a reference resolution (e.g., 1440x900 or 1920x1080)
@@ -646,7 +574,6 @@ export default function App() {
           setHistoryStates(prevH => [...prevH, canvasItems]);
           setCanvasItems(prev => [...prev, newItem]);
           setSelectedItemId(newItemId);
-          setSitePlanImage(null);
 
         };
         img.src = base64Image;
@@ -657,13 +584,12 @@ export default function App() {
 
   const analyzeViewpoint = async (base64Image: string, itemId?: string) => {
     setIsAnalyzing(true);
+    setAnalysisStep('analyzing');
     try {
-      // Phase 1 & 2: Structural & Viewpoint Analysis using gemini-3.1-pro-preview
       const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
 
-      // [V10] Image Pre-Processing: Regenerate image via AI for better internal interpretation
-      // (Proposal 3: regenerated image used internally only, canvas still shows original)
-      let analysisImageBase64 = base64Image; // fallback to original
+      // PHASE 1 Step 3: Image Pre-Processing (사용자 비노출)
+      let analysisImageBase64 = base64Image;
       try {
         const regenBase64Data = base64Image.split(',')[1];
         const regenMimeType = base64Image.split(';')[0].split(':')[1];
@@ -680,157 +606,63 @@ export default function App() {
         const regenImagePart = regenParts.find((p: any) => p.inlineData);
         if (regenImagePart?.inlineData) {
           analysisImageBase64 = `data:${regenImagePart.inlineData.mimeType};base64,${regenImagePart.inlineData.data}`;
-          console.log('%c[V10] Image Pre-Processing complete. Using regenerated image for analysis.', 'color: #7c3aed; font-weight: bold;');
         }
       } catch (regenErr) {
-        console.warn('[V10] Image Pre-Processing failed, using original:', regenErr);
+        console.warn('[Pre-Processing] Failed, using original:', regenErr);
       }
 
+      // PHASE 1 Step 4: Basic Viewpoint Analysis — #.정보분석샘플 포맷 출력
       const analysisPrompt = `
-# SYSTEM: Architectural Logic Engine (Protocol A)
+# SYSTEM: Architectural Analysis Engine (Protocol A — #.정보분석샘플)
 
-## Task
-Reverse-engineer the exact camera viewpoint (Angle, Altitude, Lens) and time from the provided image.
-
-## Visual Anchor Definitions
-- **FRONT FACADE**: Primary entrance, main lobby glazing, large-scale signage, or the most complex architectural feature.
-- **SIDE/REAR FACADE**: Repetitive window patterns, secondary service doors, or simpler materiality.
-
-## Angle Classification Rules (Clock-Face Dictionary)
-Reference: Building main facade = 06:00 (Front).
-
-1. IF center of image is FRONT face-on → \`06:00\`
-2. IF center of image is RIGHT face-on → \`03:00\`
-3. IF center of image is LEFT face-on → \`09:00\`
-4. IF center of image is REAR face-on → \`12:00\`
-5. IF left part = FRONT && right part = RIGHT → \`04:30\` (Front-Right Corner)
-6. IF left part = LEFT && right part = FRONT → \`07:30\` (Front-Left Corner)
-7. IF left part = RIGHT && right part = REAR → \`1:30\` (Rear-Right Corner)
-8. IF left part = REAR && right part = LEFT → \`10:30\` (Rear-Left Corner)
-
-## Output Constraints
-In \`elevation_views\`, MUST NOT use architecture-specific shape nouns (e.g., "Wall", "Window", "Roof").
-Describe only by optical and material properties (e.g., "70% Reflective Silver Metallic Surface", "Punching Ratio 0.4").
+## Angle Classification Rules (Clock-Face)
+Building main facade = 06:00 (Front).
+1. Center = FRONT face-on → \`06:00\`
+2. Center = RIGHT face-on → \`3:00\`
+3. Center = LEFT face-on → \`09:00\`
+4. Center = REAR face-on → \`12:00\`
+5. Left = FRONT && Right = RIGHT → \`04:30\`
+6. Left = LEFT && Right = FRONT → \`07:30\`
+7. Left = RIGHT && Right = REAR → \`1:30\`
+8. Left = REAR && Right = LEFT → \`10:30\`
 
 ## Output Format
 Return ALL fields as valid JSON:
 
 \`\`\`json
 {
-  "visual_reasoning": "Identify Left and Right visible facades first, then match to Dictionary Rule #X.",
+  "visual_reasoning": "Identify visible facades, then match to angle rule.",
   "angle": "One of: 12:00, 1:30, 3:00, 04:30, 06:00, 07:30, 09:00, 10:30",
-  "altitude_index": "0-7",
-  "lens_index": "0-7",
-  "time_index": "0-7",
-  "site_plan_hint": "Building footprint description",
-  "elevation_views": {
-    "Front": {
-      "meta": { "Target_View": "Front", "Normal_Vector": "(0,-1,0)", "Dependency_Status": "MASTER" },
-      "1_Geometry_MASTER": {
-        "A-1_Bounding_Proportions": { "Scale_X_Z": "", "Mass_Articulation": "" },
-        "A-2_Structural_Grid": { "Grid_Module": "", "Wrap_Around_Rules": "N/A" },
-        "A-3_Depth_Extrusions": { "Extrusion_Z": "", "Setback_Z": "" },
-        "A-4_Voids_Openings": { "Punching_Ratio": "", "Zoning_Align": "N/A" },
-        "A-5_Specific_Features": { "Roof_and_Base": "" }
-      },
-      "2_Property_SLAVE": {
-        "B-1_Primary_Materiality": { "Base_Color": "", "PBR_Values": "", "Texture_Detail": "" },
-        "B-2_Optical_Glazing": { "Glass_Type": "", "Optical_Index": "" },
-        "B-3_Secondary_Elements": { "Frame_Material": "" },
-        "B-4_Illumination_Shadows": { "Shadow_Intensity": "", "Directional_Light": "" },
-        "B-5_Aging_Weathering": { "Weathering_State": "" }
-      }
-    },
-    "Top": {
-      "meta": { "Target_View": "Top", "Normal_Vector": "(0,0,1)", "Dependency_Status": "SLAVE" },
-      "1_Geometry_MASTER": {
-        "A-1_Bounding_Proportions": { "Scale_X_Z": "", "Mass_Articulation": "" },
-        "A-2_Structural_Grid": { "Grid_Module": "", "Wrap_Around_Rules": "" },
-        "A-3_Depth_Extrusions": { "Extrusion_Z": "N/A", "Setback_Z": "" },
-        "A-4_Voids_Openings": { "Punching_Ratio": "N/A", "Zoning_Align": "" },
-        "A-5_Specific_Features": { "Roof_and_Base": "" }
-      },
-      "2_Property_SLAVE": {
-        "B-1_Primary_Materiality": { "Base_Color": "", "PBR_Values": "", "Texture_Detail": "" },
-        "B-2_Optical_Glazing": { "Glass_Type": "N/A", "Optical_Index": "N/A" },
-        "B-3_Secondary_Elements": { "Frame_Material": "" },
-        "B-4_Illumination_Shadows": { "Shadow_Intensity": "", "Directional_Light": "" },
-        "B-5_Aging_Weathering": { "Weathering_State": "" }
-      }
-    },
-    "Right": {
-      "meta": { "Target_View": "Right", "Normal_Vector": "(1,0,0)", "Dependency_Status": "SLAVE" },
-      "1_Geometry_MASTER": {
-        "A-1_Bounding_Proportions": { "Scale_X_Z": "", "Mass_Articulation": "" },
-        "A-2_Structural_Grid": { "Grid_Module": "", "Wrap_Around_Rules": "" },
-        "A-3_Depth_Extrusions": { "Extrusion_Z": "", "Setback_Z": "" },
-        "A-4_Voids_Openings": { "Punching_Ratio": "", "Zoning_Align": "" },
-        "A-5_Specific_Features": { "Roof_and_Base": "" }
-      },
-      "2_Property_SLAVE": {
-        "B-1_Primary_Materiality": { "Base_Color": "", "PBR_Values": "", "Texture_Detail": "" },
-        "B-2_Optical_Glazing": { "Glass_Type": "", "Optical_Index": "" },
-        "B-3_Secondary_Elements": { "Frame_Material": "" },
-        "B-4_Illumination_Shadows": { "Shadow_Intensity": "", "Directional_Light": "" },
-        "B-5_Aging_Weathering": { "Weathering_State": "" }
-      }
-    },
-    "Left": {
-      "meta": { "Target_View": "Left", "Normal_Vector": "(-1,0,0)", "Dependency_Status": "SLAVE" },
-      "1_Geometry_MASTER": {
-        "A-1_Bounding_Proportions": { "Scale_X_Z": "", "Mass_Articulation": "" },
-        "A-2_Structural_Grid": { "Grid_Module": "", "Wrap_Around_Rules": "" },
-        "A-3_Depth_Extrusions": { "Extrusion_Z": "", "Setback_Z": "" },
-        "A-4_Voids_Openings": { "Punching_Ratio": "", "Zoning_Align": "" },
-        "A-5_Specific_Features": { "Roof_and_Base": "" }
-      },
-      "2_Property_SLAVE": {
-        "B-1_Primary_Materiality": { "Base_Color": "", "PBR_Values": "", "Texture_Detail": "" },
-        "B-2_Optical_Glazing": { "Glass_Type": "", "Optical_Index": "" },
-        "B-3_Secondary_Elements": { "Frame_Material": "" },
-        "B-4_Illumination_Shadows": { "Shadow_Intensity": "", "Directional_Light": "" },
-        "B-5_Aging_Weathering": { "Weathering_State": "" }
-      }
-    },
-    "Rear": {
-      "meta": { "Target_View": "Rear", "Normal_Vector": "(0,1,0)", "Dependency_Status": "SLAVE" },
-      "1_Geometry_MASTER": {
-        "A-1_Bounding_Proportions": { "Scale_X_Z": "", "Mass_Articulation": "" },
-        "A-2_Structural_Grid": { "Grid_Module": "", "Wrap_Around_Rules": "" },
-        "A-3_Depth_Extrusions": { "Extrusion_Z": "N/A", "Setback_Z": "" },
-        "A-4_Voids_Openings": { "Punching_Ratio": "", "Zoning_Align": "" },
-        "A-5_Specific_Features": { "Roof_and_Base": "" }
-      },
-      "2_Property_SLAVE": {
-        "B-1_Primary_Materiality": { "Base_Color": "", "PBR_Values": "", "Texture_Detail": "" },
-        "B-2_Optical_Glazing": { "Glass_Type": "", "Optical_Index": "" },
-        "B-3_Secondary_Elements": { "Frame_Material": "" },
-        "B-4_Illumination_Shadows": { "Shadow_Intensity": "", "Directional_Light": "" },
-        "B-5_Aging_Weathering": { "Weathering_State": "" }
-      }
-    }
+  "section1_optical": {
+    "viewpoint": "Camera viewpoint description (e.g. 하이 앵글 코너 뷰 (부분 조감도))",
+    "azimuth": "Direction in clock-face format (e.g. 04:30 방향 (건물 정면 06:00 기준))",
+    "altitude": "Estimated camera altitude (e.g. 100m ~ 150m (교차로 상공))",
+    "perspective": "Perspective type (e.g. 2점 투시 (수직선 평행 유지))",
+    "sensor": "Estimated sensor format (e.g. 중형 포맷 (Medium Format))",
+    "focal_length": "Estimated focal length (e.g. 45mm ~ 50mm (표준 화각))",
+    "lighting": "Lighting & weather (e.g. 확산광 (Overcast), 옅은 안개)",
+    "contrast": "Contrast level (e.g. 낮음 (부드러운 그림자))"
   },
-  "bldg_ratio": {
-    "width": 10,
-    "depth": 8,
-    "height": 15
+  "section2_geometric": {
+    "skin": "Facade system (e.g. 이중 외피 구조 (Double-skin facade))",
+    "inner": "Inner facade (e.g. 평활형 유리 커튼월 (Glass Curtain Wall))",
+    "outer": "Outer facade (e.g. 유체역학적 3D 곡선 패턴의 수평 파라메트릭 루버)",
+    "mass": "Basic mass (e.g. 견고한 직육면체 매스 (Solid Glass Box))",
+    "base_1f": "Ground floor (e.g. 필로티 구조, 독립 노출 기둥 배치)",
+    "mid_body": "Mid-level (e.g. 코너부 V자 형태 오픈 발코니 (보이드 공간))",
+    "roof": "Roof (e.g. 평지붕, 중앙 기계설비(MEP) 박스, 루버 연장형 파라펫)"
   },
-  "macro_aepl": {
-    "E_road_width": "전면 도로 폭원 및 차선 수 (예: 6차선 약 22m)",
-    "E_mass_scale": "인접 건물 층수/볼륨 (예: 좌측 5층, 우측 8층 RC조)",
-    "E_skyline_contour": "가로 전체 연속 지붕선 (예: 코니스 라인 EL+18m 일정)",
-    "E_intersection_layout": "교차로 형태 (예: T자형 신호교차로, 4방향)",
-    "E_setback_distance": "인접 건물 이격 거리 (예: 좌측 4m, 우측 2m)",
-    "S_paving_material": "바닥 포장재 유형 (예: 아스팔트 도로, 화강석 보도블록)",
-    "S_vegetation_type": "가로수 및 식생 (예: 은행나무 8m 간격, 수관 직경 4m)",
-    "M_atmospheric_optics": "대기 광학 상태 (예: 맑음, 빛 산란 낮음, GI 반사 중간)",
-    "M_dynamic_agents": "동적 요소 (예: 차량 밀도 중간, 보행자 산발적, 모션 블러 약함)"
+  "section3_conceptual": {
+    "design_algorithm": "Design methodology (e.g. 파라메트릭 디자인 (Parametricism))",
+    "color_palette": "Primary color palette (e.g. 무채색 (밝은 회색), 투명 (유리))",
+    "form_motif": "Form motif (e.g. 무형의 에너지 (바람, 파동, 데이터 흐름))",
+    "form_contrast": "Form contrast (e.g. 도심의 직교 체계 ↔ 파사드의 유기적 곡선)",
+    "mood_contrast": "Mood contrast (e.g. 하이테크/미래지향적 특성 ↔ 시각적 우아함)"
   }
 }
 \`\`\`
       `;
 
-      // Use regenerated image (V10) for analysis if available, fallback to original
       const base64Data = analysisImageBase64.split(',')[1];
       const mimeType = analysisImageBase64.split(';')[0].split(':')[1];
 
@@ -851,89 +683,44 @@ Return ALL fields as valid JSON:
 
         const data = JSON.parse(jsonStr);
 
-        // [DEVELOPER INSPECTION] 5-View AEPL Schema per 전개도작성 가이드라인 §2 & §3
-        const views = data.elevation_views;
-        const VIEW_ORDER = ['Front', 'Top', 'Right', 'Left', 'Rear'];
-        const VIEW_COLORS: Record<string, string> = { Front: '#047857', Top: '#1d4ed8', Right: '#7c3aed', Left: '#b45309', Rear: '#b91c1c' };
-        const VIEW_VECTORS: Record<string, string> = { Front: '(0,-1,0)', Top: '(0,0,1)', Right: '(1,0,0)', Left: '(-1,0,0)', Rear: '(0,1,0)' };
-
+        // Developer Console — #.정보분석샘플 3-section log
         console.log('%c========================================================', 'color: #1d4ed8; font-weight: bold;');
-        console.log('%c[DEVELOPER LOG] C CHANGE VIEWPOINT — AEPL 5-VIEW SCHEMA', 'color: #1d4ed8; font-weight: bold; font-size: 14px;');
-        console.log('%c[Reference: 전개도작성 가이드라인 §2 View Sequence Standards + §3 Elevation Parameter Schema]', 'color: #1d4ed8;');
-        console.log('%c========================================================', 'color: #1d4ed8; font-weight: bold;');
-
-        // Soft Gate: check all 5 views present
-        const missingViews = VIEW_ORDER.filter(v => !views?.[v]);
-        if (missingViews.length > 0) {
-          console.warn(`%c[SOFT GATE WARNING] Missing views: ${missingViews.join(', ')}. Proceeding to PHASE 2 with available data.`, 'color: #d97706; font-weight: bold;');
-        } else {
-          console.log('%c[GATE ✓] All 5 views present — Proceeding to PHASE 2.', 'color: #047857; font-weight: bold;');
-        }
-
-        VIEW_ORDER.forEach(viewKey => {
-          const v = views?.[viewKey];
-          if (!v) { console.warn(`[${viewKey}] Not present in response.`); return; }
-          const col = VIEW_COLORS[viewKey];
-          const vec = VIEW_VECTORS[viewKey];
-          console.groupCollapsed(`%c▶ ${viewKey} Elevation  |  Normal: ${vec}  |  Status: ${v.meta?.Dependency_Status ?? '-'}`, `color: ${col}; font-weight: bold;`);
-          console.log('%c  [Part A] 1_Geometry_MASTER (Shape Anchor):', `color: ${col}; font-weight: bold;`);
-          console.dir(v['1_Geometry_MASTER'], { depth: null });
-          console.log('%c  [Part B] 2_Property_SLAVE (Data Binder):', `color: ${col}; font-weight: bold;`);
-          console.dir(v['2_Property_SLAVE'], { depth: null });
-          console.groupEnd();
-        });
-
+        console.log('%c[DEVELOPER LOG] CHANGE VIEWPOINT — #.정보분석샘플', 'color: #1d4ed8; font-weight: bold; font-size: 14px;');
+        console.log('%c섹션 1. 광학 및 시점 파라미터:', 'color: #047857; font-weight: bold;');
+        console.dir(data.section1_optical);
+        console.log('%c섹션 2. 기하학 및 공간 구조 명세:', 'color: #7c3aed; font-weight: bold;');
+        console.dir(data.section2_geometric);
+        console.log('%c섹션 3. 개념 및 시각적 속성:', 'color: #b45309; font-weight: bold;');
+        console.dir(data.section3_conceptual);
         console.log('%c========================================================', 'color: #1d4ed8; font-weight: bold;');
 
-        const aIdx = ANGLES.indexOf(data.angle);
-        if (aIdx !== -1) setAngleIndex(aIdx);
-        if (data.altitude_index !== undefined) setAltitudeIndex(Number(data.altitude_index));
-        if (data.lens_index !== undefined) setLensIndex(Number(data.lens_index));
-        if (data.time_index !== undefined) setTimeIndex(Number(data.time_index));
-        
         const analyzedOpt = {
-          angle: data.angle,
-          altitude: ALTITUDES[Number(data.altitude_index) || 0]?.label || 'N/A',
-          lens: LENSES[Number(data.lens_index) || 0]?.label || 'N/A',
-          time: TIMES[Number(data.time_index) || 0] || 'N/A'
+          angle: data.angle || '06:00',
+          altitude: data.section1_optical?.altitude || 'N/A',
+          lens: data.section1_optical?.focal_length || 'N/A',
         };
         setAnalyzedOpticalParams(analyzedOpt);
-        
-        // Update the newly uploaded Mother item with the analyzed data
+
+        const newAnalysisReport = {
+          section1: data.section1_optical || {},
+          section2: data.section2_geometric || {},
+          section3: data.section3_conceptual || {},
+        };
+        setAnalysisReport(newAnalysisReport);
+
         const newParams = {
-          angleIndex: aIdx !== -1 ? aIdx : 4,
-          altitudeIndex: Number(data.altitude_index) || 2,
-          lensIndex: Number(data.lens_index) || 0,
-          timeIndex: Number(data.time_index) || 2,
           analyzedOpticalParams: analyzedOpt,
-          elevationParams: data.elevation_parameters || null,
-          bldgRatio: data.bldg_ratio || null,  // [V11] numeric proportions for artboard grid
-          macroAEPL: data.macro_aepl || null,  // [V41] Macro-AEPL 도시 맥락 파라미터
-          sitePlanImage: null,
-          architecturalSheetImage: null
+          analysisReport: newAnalysisReport,
         };
 
         setCanvasItems(prev => prev.map(item => {
           if (item.id === itemId) return { ...item, parameters: newParams };
-          // [V39] 모체 재분석 시 파생 아이템의 geometry/property 필드 동기화
           if (item.motherId === itemId && item.parameters) {
-            return {
-              ...item,
-              parameters: {
-                ...item.parameters,
-                bldgRatio: newParams.bldgRatio,
-                elevationParams: newParams.elevationParams,
-                macroAEPL: newParams.macroAEPL, // [V41] Macro-AEPL 도시 맥락 동기화
-              }
-            };
+            return { ...item, parameters: { ...item.parameters, analysisReport: newAnalysisReport } };
           }
           return item;
         }));
-        
-        // After parameter analysis, trigger site plan generation with extracted params for synthesis
-        // Forward the entire elevation_views as the structured elevation parameters
-        const elevForPhase2 = data.elevation_views || data.elevation_parameters || null;
-        await generateSitePlan(base64Image, elevForPhase2, itemId, data.bldg_ratio);
+
         return true;
       };
 
@@ -950,330 +737,338 @@ Return ALL fields as valid JSON:
       alert("분석 API 호출이 실패하거나 할당량(Quota)을 초과했습니다. 기본값으로 세팅됩니다.");
     } finally {
       setIsAnalyzing(false);
-    }
-  };
-
-
-  const generateSitePlan = async (base64Image: string, extractedParams?: any, itemId?: string, bldgRatioArg?: { width: number; depth: number; height: number } | null) => {
-    setAnalysisStep('generating_sheet');
-    try {
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
-
-      // [V37] bldgRatio 기반 패널 정의
-      const W = bldgRatioArg?.width  ?? 10;
-      const D = bldgRatioArg?.depth  ?? 8;
-      const H = bldgRatioArg?.height ?? 15;
-
-      const PANELS = [
-        { id: 'front', label: 'FRONT', wUnit: W, hUnit: H, view: 'Front' },
-        { id: 'rear',  label: 'REAR',  wUnit: W, hUnit: H, view: 'Rear'  },
-        { id: 'left',  label: 'LEFT',  wUnit: D, hUnit: H, view: 'Left'  },
-        { id: 'right', label: 'RIGHT', wUnit: D, hUnit: H, view: 'Right' },
-        { id: 'top',   label: 'TOP',   wUnit: W, hUnit: D, view: 'Top'   },
-      ] as const;
-
-      const base64Data = base64Image.split(',')[1];
-      const mimeType   = base64Image.split(';')[0].split(':')[1];
-
-      // [V37] 패널별 AEPL 파라미터 JSON 빌더
-      const buildPanelAEPL = (viewKey: string): string => {
-        const v = extractedParams?.[viewKey];
-        if (!v) return '```json\n{ "note": "Use visual inference from IMAGE 1." }\n```';
-        return '```json\n' + JSON.stringify({
-          Geometry: v['1_Geometry_MASTER'] ?? {},
-          Material:  v['2_Property_SLAVE']  ?? {}
-        }, null, 2) + '\n```';
-      };
-
-      // [V37] 패널별 단독 프롬프트 빌더
-      const buildPanelPrompt = (panel: typeof PANELS[number]): string => `
-# Architectural Elevation Generator — ${panel.label} View
-
-## Target
-- View: ${panel.label} elevation
-- Aspect Ratio: width ${panel.wUnit} : height ${panel.hUnit}
-- Projection: Orthographic (strictly no perspective)
-- Background: 100% transparent (alpha channel mandatory)
-- No text, no labels, no dimension lines
-
-## Constraints
-- Render ONLY the ${panel.label} face of the building
-- Fill the image to the ${panel.wUnit}:${panel.hUnit} aspect ratio
-- Ground line at the bottom of the image
-- Preserve all materials, textures, and openings from IMAGE 1
-- PROHIBITED: Adding any element not visible in IMAGE 1
-
-## AEPL Reference (Phase 1 Data)
-${buildPanelAEPL(panel.view)}
-      `.trim();
-
-      // [V37] 5회 병렬 생성
-      const generateSingle = async (panel: typeof PANELS[number]): Promise<[string, string]> => {
-        const res = await ai.models.generateContent({
-          model: IMAGE_GEN,
-          contents: { parts: [
-            { inlineData: { data: base64Data, mimeType } },
-            { text: buildPanelPrompt(panel) },
-          ]},
-        });
-        const imgPart = res.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-        if (!imgPart?.inlineData) throw new Error(`No image returned for ${panel.label}`);
-        return [panel.id, `data:${imgPart.inlineData.mimeType};base64,${imgPart.inlineData.data}`];
-      };
-
-      const results = await Promise.all(PANELS.map(p => generateSingle(p)));
-      const elevationImages: Record<string, string> = Object.fromEntries(results);
-
-      console.log('%c[V37] 5-panel individual generation complete.', 'color: #047857; font-weight: bold;');
-
-      setSitePlanImage(elevationImages['top']);
-
-      if (itemId) {
-        setCanvasItems(prev => prev.map(item => {
-          // [V39] 모체 + 모체를 참조하는 파생 아이템 모두 elevationImages 동기화
-          if ((item.id === itemId || item.motherId === itemId) && item.parameters) {
-            return {
-              ...item,
-              parameters: {
-                ...item.parameters,
-                sitePlanImage: elevationImages['top'],
-                elevationImages,
-              }
-            };
-          }
-          return item;
-        }));
-      }
-    } catch (err) {
-      console.warn("Multi-view generation failed", err);
+      setAnalysisStep('');
     }
   };
 
   // ---
-  // PHASE 4: SYNTHESIS & GENERATION
-  // Layer A (Geometry) + Layer B (5-IVSP Viewpoint) + Layer C (Property Slave)
+  // PHASE 3: VIEWPOINT CONFIGURATION — 뷰 선택 기반 이미지 생성
   // ---
   const handleGenerate = async () => {
-    // [PHASE 4 - Step 1] Integration Validation
-    const sourceItem = selectedItemId 
-      ? canvasItems.find(item => item.id === selectedItemId) 
+    const sourceItem = selectedItemId
+      ? canvasItems.find(item => item.id === selectedItemId)
       : (canvasItems.length > 0 ? canvasItems[0] : null);
 
     if (!sourceItem) {
       alert("Please upload at least one image first.");
       return;
     }
+    if (!selectedView) {
+      alert("뷰 타입을 선택해주세요 (아이레벨투시뷰 / 정면뷰 / 탑뷰).");
+      return;
+    }
 
     setIsGenerating(true);
     try {
       const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
-      
-      const currentAngle = ANGLES[angleIndex];
-      const currentAltitude = ALTITUDES[altitudeIndex];
-      const currentLens = LENSES[lensIndex];
-      const currentTime = TIMES[timeIndex];
 
-      const scenario = determineScenario(currentAngle, currentAltitude.value, currentLens.value);
-
-      // [PHASE 4 - Step 2] Unified Prompt Assembly
-      // Layer B: 5-IVSP Phase 1 (Coordinate Anchoring) + Phase 2 (Optical Engineering)
-      // V₀: AI-analyzed source viewpoint (from PHASE 1 analyzeViewpoint)
-      const v0_angle    = analyzedOpticalParams?.angle    || 'Unknown';
-      const v0_altitude = analyzedOpticalParams?.altitude || 'Unknown';
-      const v0_lens     = analyzedOpticalParams?.lens     || 'Unknown';
-      const v0_time     = analyzedOpticalParams?.time     || 'Unknown';
-      
-      // [V41] Macro-AEPL 도시 맥락 파라미터 추출
       const trueSource = (sourceItem.type === 'generated' && sourceItem.motherId)
         ? canvasItems.find(i => i.id === sourceItem.motherId)
         : sourceItem;
-      const macroAEPL = trueSource?.parameters?.macroAEPL as Record<string, string> | undefined;
+      const report = trueSource?.parameters?.analysisReport;
 
-      const layerB_viewpoint = `
-# ACTION PROTOCOL (MANDATORY EXECUTION WORKFLOW)
-## Pre-Step: Reality Anchoring & Camera Delta Calculation
-- V₀ (Current Camera Position — AI Reverse-Engineered):
-    Angle: ${v0_angle} o'clock | Altitude: ${v0_altitude} | Lens: ${v0_lens} | Time: ${v0_time}
-    This is the exact camera position from which the SOURCE IMAGE (IMAGE 1) was captured.
-- V₁ (Target Camera Position — User Command):
-    Angle: ${currentAngle} o'clock | Altitude: ${currentAltitude.label} | Lens: ${currentLens.label} | Time: ${currentTime}
-- Δ Movement Vector: Orbit from ${v0_angle} → ${currentAngle} | Altitude change: ${v0_altitude} → ${currentAltitude.label}
-    Execute this as a precise Physical Camera Orbit around the immutable building geometry.
+      // Build #.정보분석샘플 context block
+      const buildAnalysisContext = () => {
+        if (!report) return '## ANALYSIS CONTEXT\n(No analysis data — infer from source image.)';
+        const s1 = report.section1 || {};
+        const s2 = report.section2 || {};
+        const s3 = report.section3 || {};
+        return `## ANALYSIS CONTEXT (From Phase 1 — #.정보분석샘플)
 
-## Step 1: Coordinate Anchoring & Vector Calculation
-- Reference: Building main facade fixed at 06:00 (Front).
-- Target Vector: ${currentAngle}
-- Altitude: ${currentAltitude.label}
+### 섹션 1. 광학 및 시점 파라미터 (Optical & Viewpoint Data)
+| 변수 (Variable) | 구조화 데이터 (Value) |
+| :--- | :--- |
+| **촬영 시점 (Viewpoint)** | ${s1.viewpoint || 'N/A'} |
+| **방위각 (Azimuth)** | ${s1.azimuth || 'N/A'} |
+| **촬영 고도 (Altitude)** | ${s1.altitude || 'N/A'} |
+| **투시 왜곡 (Perspective)** | ${s1.perspective || 'N/A'} |
+| **센서 포맷 (Sensor)** | ${s1.sensor || 'N/A'} |
+| **초점 거리 (Focal Length)** | ${s1.focal_length || 'N/A'} |
+| **광원 및 날씨 (Lighting)** | ${s1.lighting || 'N/A'} |
+| **대비 강도 (Contrast)** | ${s1.contrast || 'N/A'} |
 
-## Step 2: Scenario Mapping & Optical Engineering
-- Scenario: ${scenario}
-- Lens: ${currentLens.label}
-- Time of Day: ${currentTime}`;
+### 섹션 2. 기하학 및 공간 구조 명세 (Geometric & Spatial Specifications)
+| 시스템 분류 | 구조 및 형태 사양 |
+| :--- | :--- |
+| **외피 시스템 (Skin)** | ${s2.skin || 'N/A'} |
+| **내부 파사드 (Inner)** | ${s2.inner || 'N/A'} |
+| **외부 파사드 (Outer)** | ${s2.outer || 'N/A'} |
+| **기본 매스 (Mass)** | ${s2.mass || 'N/A'} |
+| **하층부 (1F Base)** | ${s2.base_1f || 'N/A'} |
+| **중층부 (Mid Body)** | ${s2.mid_body || 'N/A'} |
+| **상층부 (Roof)** | ${s2.roof || 'N/A'} |
 
-      // [V9 FIX 1] Layer C: 5-View AEPL Property Injection (reads from new elevation_views format)
-      const getViewData = (viewKey: string) => {
-        if (!elevationParams) return null;
-        // Support both new (elevation_views) and legacy formats
-        return elevationParams[viewKey] || elevationParams;
+### 섹션 3. 개념 및 시각적 속성 (Conceptual & Visual Attributes)
+| 속성 분류 | 데이터 지표 |
+| :--- | :--- |
+| **디자인 알고리즘** | ${s3.design_algorithm || 'N/A'} |
+| **주조색 (Color Palette)** | ${s3.color_palette || 'N/A'} |
+| **형태 모티브 (Motif)** | ${s3.form_motif || 'N/A'} |
+| **형태적 대비 (Form)** | ${s3.form_contrast || 'N/A'} |
+| **감성적 대비 (Mood)** | ${s3.mood_contrast || 'N/A'} |`;
       };
-      const frontView = getViewData('Front');
-      const esc = (v: any) => String(v ?? 'N/A').replace(/"/g, '\\"');
-      const layerC_property = frontView
-        ? `
-## Step 5: Structural & Material Parameters (Phase 1 AEPL — Immutable)
-Source: 5-View Elevation Schema / Front Elevation MASTER
 
-\`\`\`json
-{
-  "geometry": {
-    "A1_BoundingProportions": "${esc(frontView['1_Geometry_MASTER']?.['A-1_Bounding_Proportions']?.Scale_X_Z || frontView['1_Geometry_MASTER']?.['A-1_Bounding_Proportions'])}",
-    "A2_StructuralGrid": "${esc(frontView['1_Geometry_MASTER']?.['A-2_Structural_Grid']?.Grid_Module)}",
-    "A3_DepthExtrusions": "${esc(frontView['1_Geometry_MASTER']?.['A-3_Depth_Extrusions']?.Extrusion_Z)}",
-    "A4_VoidsOpenings": "${esc(frontView['1_Geometry_MASTER']?.['A-4_Voids_Openings']?.Punching_Ratio)}",
-    "A5_RoofBase": "${esc(frontView['1_Geometry_MASTER']?.['A-5_Specific_Features']?.Roof_and_Base)}"
-  },
-  "material": {
-    "B1_PrimaryMateriality": "${esc(frontView['2_Property_SLAVE']?.['B-1_Primary_Materiality']?.Base_Color)}",
-    "B1_PBR": "${esc(frontView['2_Property_SLAVE']?.['B-1_Primary_Materiality']?.PBR_Values)}",
-    "B2_Glazing": "${esc(frontView['2_Property_SLAVE']?.['B-2_Optical_Glazing']?.Glass_Type)}",
-    "B4_Illumination": "${esc(frontView['2_Property_SLAVE']?.['B-4_Illumination_Shadows']?.Shadow_Intensity)}"
-  }
-}
-\`\`\`
+      const analysisContext = buildAnalysisContext();
 
-## Step 5-B: Urban Context Parameters — Macro-AEPL (Layer C)
-${macroAEPL
-  ? `\`\`\`json\n${JSON.stringify(macroAEPL, null, 2)}\n\`\`\``
-  : 'Macro-AEPL not available — infer urban context from IMAGE 1 using continuity rules (Steps 6–8).'}
-Apply these urban parameters when reconstructing the surrounding environment at V₁:
-- E_road_width / E_intersection_layout: define road geometry in foreground.
-- E_mass_scale / E_setback_distance / E_skyline_contour: define adjacent building masses and background.
-- S_paving_material / S_vegetation_type: define ground surface and street trees.
-- M_atmospheric_optics: global lighting and haze.
-- M_dynamic_agents: moving vehicles and pedestrians.`
-        : '';
+      // View-specific prompt
+      let finalPrompt = '';
 
-      // [V15] v4: Virtual Photography — NO Blind Spot Inference. Replace with Scene Capture Execution.
-      // Step 3 now locks geometry from Phase 2 elevation data. No new details added.
-      const layerC_sceneCapture = `
-## Step 3: Scene Capture Execution (protocol-Change Viewpoint-v4)
-- Perspective: ${['04:30','07:30','1:30','10:30'].includes(currentAngle) ? '2-Point Perspective (corner)' : '1-Point Perspective (face-on)'}.
-- Elevation Data Sync: Load PHASE 2 pre-computed elevation(s) as permanent immutable geometry. DO NOT add, remove, or modify any architectural element.
-- Geometric Sanctuary: The building's proportions, openings, and surface texture are 100% locked to the elevation reference data.
-- Material Injection: Lock original textures from IMAGE 1. Apply Relighting ONLY for time of day (${currentTime}). Do not invent new materials.
-- PROHIBITION: Generating service doors, MEP pipes, ventilation grilles, or any details NOT present in the provided elevation data is STRICTLY FORBIDDEN.
+      if (selectedView === 'eyeLevel') {
+        finalPrompt = `# GOAL
+* Generate a precise "Eye-Level Corner View" of the architecture presented in the source image.
+* Treat the building in the image as a completed, constructed reality.
+* Change the angle of view to this specific new perspective without altering the building's original geometry, materials, or style.
+* Render the simulation strictly by resetting the **Angle of View** and the **Optical Environment**.
 
-## Step 6: Dynamic Urban Context Synchronization (Macro-AEPL — MANDATORY)
-The camera has moved from V₀ (${v0_angle}) to V₁ (${currentAngle}). The surrounding urban environment MUST rotate and transform to match the new camera position:
-- Recalculate which urban elements (roads, adjacent buildings, landscape, sky) appear in the foreground and background at V₁.
-- Adjacent building masses that were off-screen at V₀ may now enter the frame at V₁ — render them at the correct scale and depth position.
-- Urban elements that were in front of the camera at V₀ but are now behind the camera at V₁ MUST be removed from the frame.
-- DO NOT carry over the V₀ background/foreground into the V₁ render. The entire scene context must be re-derived from the new camera position.
+# Photographer's workflow
+**Manual Entry: Capturing a Dynamic Eye-Level Corner View**
+This professional technique utilizes a **two-point perspective** to maximize a building's sense of form, volume, and depth.
 
-## Step 7: Road & Pathway Continuity
-- The road axis and street trees visible in IMAGE 1 must be re-projected for the V₁ camera angle, extending toward the correct vanishing point(s).
-- Street furniture (traffic lights, streetlamps, bus shelters) follows the extended road grid at regular intervals matching IMAGE 1.
-- The road perspective in the output MUST correspond to V₁, not V₀.
+**Method:**
+1. **Positioning:** Place the camera at ground level, maintaining a standard **eye-level height (approx. 1.5 - 1.8 meters)**. Frame the shot from a corner, allowing two facades of the building to recede into the frame.
+2. **Photographic Focus:** Capture the interplay between the building's primary surfaces and its structural rhythm. Concentrate on how the light models the **volumetric mass** and reveals the **texture of the main facade materials**. Use fenestration patterns to create a sense of scale and repetition.
+3. **Lighting:** Shoot under the **soft, even, diffused light of an overcast day**. This neutral lighting avoids harsh shadows that can obscure architectural forms.
+4. **Lens and Perspective Control:** Use a **wide-angle lens (e.g., 24-35mm)** to create a sense of presence with a **tilt-shift lens**. All vertical lines must be rendered perfectly straight.
 
-## Step 8: Skyline & Background Completion
-- Fill the background with adjacent building masses whose cornice lines are consistent with the subject building's urban context.
-- Buildings farther from the camera: reduce surface detail and apply atmospheric haze proportional to depth.
-- The skyline must form a physically continuous urban fabric consistent with the block geometry observed in IMAGE 1.`;
+# Specification: Eye-Level Corner View
+* **Shooting Intent**: Naturally expresses the building's three-dimensionality and surrounding context with perfect vertical distortion control.
+* **Camera**: Sony A7R V (61MP High Resolution)
+* **Lens**: Canon TS-E 24mm f/3.5L II (Tilt-Shift Lens, using adapter)
+* **Aperture**: f/11
+* **ISO**: 100
+* **Shutter Speed**: 1/125 sec
+* **Other Equipment**: Sturdy Tripod
 
+---
 
-      const elevationSlots = getElevationSlot(currentAngle);
-      const elevationLabel = elevationSlots.map(s => s.label).join('+');
-      const imageCount = 1 + elevationSlots.length; // image 1 = original, rest = elevation crops
+## Camera Settings for This Render
+* **View Direction**: ${eyeLevelDirection} (${eyeLevelDirection === '04:30' ? 'Front-Right Corner' : 'Front-Left Corner'})
+* **Altitude**: 1.6m (Eye Level)
+* **Lens**: 24-32mm (Wide Tilt-Shift)
+* **Perspective**: 2-Point Perspective
 
-      // [V14 fix] Corner face direction map (Left-hand / Right-hand wall assignment)
-      // Prevents AI from randomly swapping which face appears on left vs right of the 2-Point Perspective frame.
-      type CornerFaceRule = { lhFace: string; rhFace: string };
-      const CORNER_FACE_RULES: Record<string, CornerFaceRule> = {
-        '04:30': { lhFace: 'FRONT', rhFace: 'RIGHT'  },
-        '07:30': { lhFace: 'LEFT',  rhFace: 'FRONT'  },
-        '1:30':  { lhFace: 'REAR',  rhFace: 'RIGHT'  },
-        '10:30': { lhFace: 'LEFT',  rhFace: 'REAR'   },
-      };
-      const cornerFaceRule = CORNER_FACE_RULES[currentAngle];
+${analysisContext}
 
-      // Layer A + B + C (v4): Unified Final Prompt — Virtual Photography
-      const finalPrompt = `
-# SYSTEM: Virtual Architectural Photography Engine (protocol-Change Viewpoint-v4)
+[GENERATE IMAGE NOW]`;
 
-# GOAL
-Perform a precise camera orbit around a fixed architectural subject and render the result. This is VIRTUAL PHOTOGRAPHY — not image generation. The building geometry is a completed, immutable reality. Only the camera moves.
+      } else if (selectedView === 'front') {
+        finalPrompt = `# GOAL
+* Generate a precise "Front Elevation View" of the architecture presented in the source image.
+* Treat the building in the image as a completed, constructed reality.
+* Change the angle of view to this specific new perspective without altering the building's original geometry, materials, or style.
+* Render the simulation strictly by resetting the **Angle of View** and the **Optical Environment**.
 
-# INPUT IMAGES
-- IMAGE 1 (Source of Truth): The original uploaded architectural photo. Provides material textures and visible surface data.
-${elevationSlots.length === 1
-  ? `- IMAGE 2 (Elevation Blueprint): The PHASE 2 pre-computed ${elevationLabel} orthographic elevation. This is an immutable geometric reference. Reflect all proportions, openings, and structure EXACTLY in the output.`
-  : `- IMAGE 2 (Left-hand Face Blueprint): The PHASE 2 pre-computed ${cornerFaceRule?.lhFace ?? elevationSlots[0].label} elevation — this face appears on the LEFT side of the 2-Point Perspective output frame.
-- IMAGE 3 (Right-hand Face Blueprint): The PHASE 2 pre-computed ${cornerFaceRule?.rhFace ?? elevationSlots[1].label} elevation — this face appears on the RIGHT side of the 2-Point Perspective output frame.
-  Both faces are immutable geometric references. The output MUST place each face on its correct side of the frame exactly as specified.`
-}
+# PHOTOGRAPHER'S WORKFLOW
+**Manual Entry: Capturing a Distortion-Free Elevation (Front) View**
+This professional technique creates a perfectly flat, perspective-corrected representation of a building's facade.
 
-# CORE PHILOSOPHY (MANDATORY — DO NOT OVERRIDE)
-- **Geometric Sanctuary:** The building's proportions, structure, openings, materials, and aging are IMMUTABLE CONSTANTS. They are 100% fixed by the PHASE 2 elevation data and IMAGE 1. Zero tolerance for modification.
-- **Camera-Only Variable:** The only variable is the observer's 3D position (coordinate & altitude) and lens. Nothing else changes.
-- **ABSOLUTE PROHIBITION:** Adding service doors, MEP pipes, new windows, or ANY architectural element not present in the blueprints is STRICTLY FORBIDDEN.
+**Method:**
+1. **Positioning:** Place the camera directly facing the facade, ensuring the camera's sensor plane is perfectly parallel to the building's surface.
+2. **Photographic Focus:** Document the formal composition of the facade — proportion, rhythm of modular elements, and pure materiality. Represent the architect's two-dimensional design intent with absolute clarity.
+3. **Lighting:** Shoot under the soft, even, diffused light of an overcast day to render textures and colors accurately without shadows.
+4. **Lens and Perspective Control:** Use a tilt-shift lens — non-negotiable for this shot. Renders all vertical and horizontal lines perfectly parallel to the frame.
+
+# SPECIFICATION: FRONT ELEVATION VIEW
+* **Shooting Intent:** Records the architect's design intent accurately like a 2D drawing. Minimizes perspective to emphasize proportion and rhythm.
+* **Camera:** Sony A7R V
+* **Lens:** Canon TS-E 50mm f/2.8L MACRO (Standard angle Tilt-Shift Lens)
+* **Aperture:** f/11
+* **ISO:** 100
+* **Shutter Speed:** 1/125 sec
+* **Other Equipment:** Tripod
+
+---
+
+## Camera Settings for This Render
+* **View Direction**: 06:00 (Direct Front)
+* **Altitude**: ${frontAltitude}m
+* **Lens**: 50mm (Standard Tilt-Shift)
+* **Perspective**: 1-Point Perspective
+
+${analysisContext}
+
+[GENERATE IMAGE NOW]`;
+
+      } else if (selectedView === 'top') {
+        finalPrompt = `# GOAL
+* Generate a precise "Orthographic TOP View" of the architecture presented in the source image.
+* Treat the building in the image as a completed, constructed reality.
+* Change the angle of view to this specific new perspective without altering the building's original geometry, materials, or style.
+* Render the simulation strictly by resetting the **Angle of View** and the **Optical Environment**.
+
+# Photographer's workflow
+**Manual Entry: Capturing the Orthographic Top View**
+This professional technique creates a perfectly flat, non-perspective, two-dimensional image of a building's roof — a plan view.
+
+**Method:**
+1. **Positioning:** Place the camera (drone) at sufficient altitude, positioned directly and vertically above the center of the building.
+2. **Photographic Focus:** Capture the **graphic composition of the roof plane** — overall footprint, geometric relationship between forms and voids, and patterns created by roofing materials.
+3. **Lighting:** Shoot under the **soft, even, diffused light of an overcast day** to eliminate all shadows and document pure geometry with maximum clarity.
+4. **Technique and Perspective Control:** True **orthographic projection** — all perspective eliminated. Frame in a **1:1 square aspect ratio**.
+
+# Specification: Top View
+* **Shooting Intent**: Shows the roof plan configuration accurately without distortion.
+* **Camera**: DJI Mavic 3 Pro Cine (Drone)
+* **Lens**: 24mm Hasselblad Camera (Main Wide-angle Camera)
+* **Aperture**: f/8
+* **ISO**: 100
+* **Shutter Speed**: 1/250 sec
+* **Other Equipment**: Vertical Descent Shooting Mode
+
+---
+
+## Camera Settings for This Render
+* **View Direction**: 06:00 (Nadir / Straight Down)
+* **Altitude**: 300m
+* **Lens**: 24mm
+* **Perspective**: Orthographic Projection (True Top-Down)
+
+${analysisContext}
+
+[GENERATE IMAGE NOW]`;
+
+      } else if (selectedView === 'rightSide') {
+        finalPrompt = `# GOAL
+- 이미지 속의 건축물의 "정면뷰{front view}"를 생성하세요.
+- 이미지 속의 건축물은 완료된 준공작입니다. [기하학적 형태와 자재의 변경 없이 오직 **시점(Angle of View)**과 **광학적 환경**만을 재설정하여 렌더링하십시오.
 
 # CONTEXT
-- Ontological Status: "Completed Architectural Reality" — a fixed physical object photographed from a new angle.
-- Reference Frame: Building main facade = 06:00 (Front). All other directions are relative to this.
-${layerB_viewpoint}
-${layerC_sceneCapture}
-${layerC_property}
+- **입력 데이터 위상:** 입력 이미지는 수정 가능한 스케치가 아닌, 불변의 물리적 좌표값으로 취급됩니다.
+- **작동 원칙:** 생성(Generation)이 아닌 **시뮬레이션(Simulation)**입니다. 환각(Hallucination)을 엄격히 배제하고, 원본의 구조적 데이터를 새로운 카메라 좌표로 투영(Projection)하십시오.
+- **핵심 제약:** 기하학(Geometry), 비례(Proportion), 구조적 디테일(Structural Detail)은 "변경 불가능한 상수"입니다.
 
-## Step 4: Capture & Compliance Check
-- Execute: Orbit camera to the target coordinate. Render using the lens and perspective from Step 2. Output is a photorealistic architectural image as if physically photographed from the target position.
-- Compliance:
-  [ ] Geometry identical to elevation blueprints? (Zero deviation)
-  [ ] Perspective law applied correctly? (1-Point or 2-Point as specified)
-  [ ] No invented or hallucinated architectural elements?
-  [ ] Original materials and textures preserved from IMAGE 1?
-${cornerFaceRule ? `  [ ] IMAGE 2 (${cornerFaceRule.lhFace}) is on the LEFT of the frame? IMAGE 3 (${cornerFaceRule.rhFace}) is on the RIGHT?` : `  [ ] Elevation blueprint reflected accurately in output?`}
-${prompt ? `\nAdditional instruction: ${prompt}` : ''}
+# ROLE
+건축 사진가 (Architectural Simulation Engine & Virtual Photographer)
+나는 현실 세계의 건축물을 디지털 트윈 환경에서 새로운 각도로 기록하는 전문가입니다.
 
-[CAPTURE IMAGE NOW]
-      `.trim();
+# ACTION PROTOCOL (Blended Execution)
+
+## Step 1. 존재론적 고정 (Ontological Locking)
+**[분석 및 명령 통합]**
+원본 이미지를 스캔하여 건축물의 3D 좌표를 고정하십시오.
+- **Action:** 입력된 이미지를 '변경 불가능한 청사진'으로 선언합니다.
+- **Execution Command:**
+  > "Target is a completed structure. LOCK all geometric vertices and material coordinates. DO NOT modify architectural form."
+
+## Step 2. 가상 카메라 및 앵글 재배치 (Optical Targeting)
+### **Photographer's workflow**
+**Manual Entry: Capturing a Distortion-Free Elevation View (Front)**
+This professional technique is used to create a perfectly flat, perspective-corrected representation of a building's facade, applicable to both front and side views.
+
+**Method:**
+1.  **Positioning:** Place the camera directly facing the facade, ensuring the camera's sensor plane is perfectly parallel to the building's surface.
+
+2.  **Photographic Focus:** The objective is to document the **formal composition** of the facade. Concentrate on the building's **sense of proportion, the rhythm of its modular elements (like windows or panels), and its pure materiality**. The goal is to represent the architect's two-dimensional design intent with absolute clarity.
+
+3.  **Lighting:** As a standard professional practice, shoot under the **soft, even, diffused light of an overcast day**. This neutral lighting is chosen to render textures and colors accurately without shadows that could obscure the facade's details or flatness.
+
+4.  **Lens and Perspective Control:** The use of a **tilt-shift lens is non-negotiable** for this type of shot. It allows for precise composition while keeping the camera level, thus rendering all vertical and horizontal lines perfectly parallel to the frame. A **telephoto lens** can also be used from a distance to further compress perspective.
+
+### Specification: Front & Side Elevation View
+* **Shooting Intent**: Records the architect's design intent accurately and objectively like a 2D drawing. Minimizes perspective to emphasize the proportion and rhythm of the facade.
+* **Camera**: Sony A7R V
+* **Lens**: Canon TS-E 50mm f/2.8L MACRO (Standard angle Tilt-Shift Lens)
+* **Aperture**: f/11
+* **ISO**: 100
+* **Shutter Speed**: 1/125 sec
+* **Other Equipment**: Tripod
+
+---
+
+## Camera Settings for This Render
+* **View Direction**: ${rightSideDirection} (${rightSideDirection === '03:00' ? 'Right Side Elevation' : 'Left Side Elevation'})
+* **Altitude**: ${rightSideAltitude}m
+* **Lens**: 50mm (Standard Tilt-Shift)
+* **Perspective**: 1-Point Perspective (Side)
+
+${analysisContext}
+
+[GENERATE IMAGE NOW]`;
+
+      } else if (selectedView === 'birdEye') {
+        finalPrompt = `# GOAL
+* Generate a precise "Bird's-eye Perspective View" of the architecture presented in the source image.
+* Treat the building in the image as a completed, constructed reality.
+* Change the angle of view to this specific new perspective without altering the building's original geometry, materials, or style.
+* Render the simulation strictly by resetting the **Angle of View** and the **Optical Environment**.
+
+# **Photographer's workflow**
+A professional drone photography technique for creating a dynamic and hyper-realistic **Bird's-eye Perspective view** of a building, showcasing its roof plane and facades with a natural sense of depth and scale.
+
+This method requires positioning a drone at a **high altitude** and angling the camera downward (typically between **45 to 60 degrees**) relative to the ground. Using a **wide-angle to standard focal length (e.g., 24mm to 35mm)** introduces natural perspective distortion (vanishing points), allowing the building to recede realistically into its surrounding context and emphasizing its three-dimensional volume.
+
+Shoot under **crisp, clear daylight or golden hour lighting** with strong directional sunlight. This lighting is essential to cast defined, natural shadows that carve out the architectural geometry, creating a highly tactile, hyper-realistic atmosphere with rich contrast and deep spatial awareness.
+
+The final image should be rendered in **ultra-high resolution** using High Dynamic Range (HDR) techniques to ensure absolute sharpness and photorealistic detail across both brilliant highlights and deep shadows. Frame the composition in a **16:9 or 4:3 aspect ratio** to provide a cinematic, immersive view of the architecture beautifully anchored within its environment.
+
+# Specification: Bird's-eye Perspective View
+* **Shooting Intent**: Uses a drone to capture a hyper-realistic, three-dimensional view of the building integrated within its context. Uses natural perspective to emphasize architectural scale and depth, creating an immersive, true-to-life visual experience.
+* **Camera**: DJI Mavic 3 Pro Cine (Drone)
+* **Lens**: 24mm Hasselblad Camera (Wide-angle to capture context and natural perspective distortion)
+* **Aperture**: f/8 (For maximum edge-to-edge sharpness and deep depth of field)
+* **ISO**: 100
+* **Shutter Speed**: 1/500 sec (To ensure absolute stability and crisp details from the air)
+* **Other Equipment**: Auto Exposure Bracketing (AEB) for hyper-realistic HDR processing and precise GPS hovering.
+---
+
+{
+  "prompt": {
+    "goal": [
+      "Generate a precise \\"Bird's-eye Perspective View\\" of the architecture presented in the source image.",
+      "Treat the building in the image as a completed, constructed reality.",
+      "Change the angle of view to this specific new perspective without altering the building's original geometry, materials, or style.",
+      "Render the simulation strictly by resetting the Angle of View and the Optical Environment."
+    ],
+    "photographers_workflow": {
+      "description": "A professional drone photography technique for creating a dynamic and hyper-realistic Bird's-eye Perspective view of a building, showcasing its roof plane and facades with a natural sense of depth and scale.",
+      "method": {
+        "positioning_and_perspective": "This method requires positioning a drone at a high altitude and angling the camera downward (typically between 45 to 60 degrees) relative to the ground. Using a wide-angle to standard focal length (e.g., 24mm to 35mm) introduces natural perspective distortion (vanishing points), allowing the building to recede realistically into its surrounding context and emphasizing its three-dimensional volume.",
+        "lighting": "Shoot under crisp, clear daylight or golden hour lighting with strong directional sunlight. This lighting is essential to cast defined, natural shadows that carve out the architectural geometry, creating a highly tactile, hyper-realistic atmosphere with rich contrast and deep spatial awareness.",
+        "rendering_and_composition": "The final image should be rendered in ultra-high resolution using High Dynamic Range (HDR) techniques to ensure absolute sharpness and photorealistic detail across both brilliant highlights and deep shadows. Frame the composition in a 16:9 or 4:3 aspect ratio to provide a cinematic, immersive view of the architecture beautifully anchored within its environment."
+      }
+    },
+    "specification": {
+      "view_type": "Bird's-eye Perspective View",
+      "details": {
+        "shooting_intent": "Uses a drone to capture a hyper-realistic, three-dimensional view of the building integrated within its context. Uses natural perspective to emphasize architectural scale and depth, creating an immersive, true-to-life visual experience.",
+        "camera": "DJI Mavic 3 Pro Cine (Drone)",
+        "lens": "24mm Hasselblad Camera (Wide-angle to capture context and natural perspective distortion)",
+        "aperture": "f/8 (For maximum edge-to-edge sharpness and deep depth of field)",
+        "iso": 100,
+        "shutter_speed": "1/500 sec (To ensure absolute stability and crisp details from the air)",
+        "other_equipment": "Auto Exposure Bracketing (AEB) for hyper-realistic HDR processing and precise GPS hovering."
+      }
+    }
+  }
+}
+
+---
+
+## Camera Settings for This Render
+* **View Direction**: ${birdEyeDirection} (${birdEyeDirection === '04:30' ? 'Front-Right' : 'Front-Left'})
+* **Altitude**: High Drone Altitude (45–60° Downward Angle)
+* **Lens**: 24mm (Wide-angle Hasselblad)
+* **Perspective**: Two-Point Perspective (Bird's-eye)
+
+${analysisContext}
+
+[GENERATE IMAGE NOW]`;
+      }
 
       let actualImageSrc = sourceItem.src;
-      // V82: If generating from a generated image, we MUST use the mother image's src for the AI!
       if (sourceItem.type === 'generated' && sourceItem.motherId) {
         const motherItem = canvasItems.find(i => i.id === sourceItem.motherId);
-        if (motherItem) {
-          actualImageSrc = motherItem.src;
-        }
+        if (motherItem) actualImageSrc = motherItem.src;
       }
 
       const base64Data = actualImageSrc.split(',')[1];
       const mimeType = actualImageSrc.split(';')[0].split(':')[1];
 
-      // [PHASE 4 - Step 3] Final Image Generation
       const runGeneration = async (modelName: string) => {
         const parts: any[] = [
           { inlineData: { data: base64Data, mimeType: mimeType } },
+          { text: finalPrompt },
         ];
-
-        // [V39] 파생 아이템인 경우 모체의 elevationImages를 우선 사용 (single source of truth)
-        const trueSource = (sourceItem.type === 'generated' && sourceItem.motherId)
-          ? canvasItems.find(i => i.id === sourceItem.motherId)
-          : sourceItem;
-        const elevImgs = trueSource?.parameters?.elevationImages as Record<string, string> | undefined;
-        if (elevImgs) {
-          const slots = getElevationSlot(currentAngle);
-          for (const slot of slots) {
-            const elevImg = elevImgs[slot.label.toLowerCase()];
-            if (elevImg) {
-              parts.push({ inlineData: { data: elevImg.split(',')[1], mimeType: 'image/png' } });
-              console.log(`[V37] Injecting elevation: ${slot.label}`);
-            } else {
-              console.warn(`[V37] Elevation not found: ${slot.label}`);
-            }
-          }
-        }
-
-        parts.push({ text: finalPrompt });
 
         const response = await ai.models.generateContent({
           model: modelName,
@@ -1285,8 +1080,6 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
           for (const part of response.candidates[0].content.parts) {
             if (part.inlineData) {
               const generatedSrc = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-              
-              // [PHASE 4 - Step 4] Result Projection
               const img = new Image();
               img.onload = () => {
                 const newGenItem: CanvasItem = {
@@ -1299,17 +1092,8 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                   height: sourceItem.height,
                   motherId: sourceItem.motherId || sourceItem.id,
                   parameters: {
-                    angleIndex,
-                    altitudeIndex,
-                    lensIndex,
-                    timeIndex,
                     analyzedOpticalParams: analyzedOpticalParams,
-                    elevationParams: elevationParams,
-                    elevationImages: sourceItem.parameters?.elevationImages, // [V16] Inherit to child
-                    bldgRatio: sourceItem.parameters?.bldgRatio,           // [V16] Inherit to child
-                    macroAEPL: sourceItem.parameters?.macroAEPL,           // [V41] Inherit to child
-                    sitePlanImage: sitePlanImage,
-                    architecturalSheetImage: architecturalSheetImage
+                    analysisReport: trueSource?.parameters?.analysisReport || null,
                   }
                 };
                 setCanvasItems(prev => {
@@ -1317,12 +1101,9 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                   let currentX = sourceItem.x + sourceItem.width + 12;
                   let currentY = sourceItem.y;
                   let hasOverlap = true;
-
-                  // Simple overlap check
                   while (hasOverlap) {
                     hasOverlap = false;
                     for (const item of prev) {
-                      // simple AABB intersection check
                       if (
                         currentX < item.x + item.width &&
                         currentX + newGenItem.width > item.x &&
@@ -1335,16 +1116,13 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                       }
                     }
                   }
-
                   newGenItem.x = currentX;
                   newGenItem.y = currentY;
-
                   return [...prev, newGenItem];
                 });
                 setSelectedItemId(newGenItem.id);
               };
               img.src = generatedSrc;
-              
               foundImage = true;
               break;
             }
@@ -1353,7 +1131,6 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
         return foundImage;
       };
 
-      // Try primary model, fallback if needed
       try {
         const success = await runGeneration(IMAGE_GEN);
         if (!success) throw new Error("Text returned instead of image");
@@ -1380,7 +1157,7 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
       <header className="h-16 shrink-0 flex justify-between items-center px-4 border-b border-black/10 dark:border-white/10 transition-colors duration-300">
         <div className="flex items-center gap-3">
           <span className="text-[1.575rem] font-display font-bold tracking-[0.0125em] uppercase leading-tight pt-1">C</span>
-          <span className="text-[1.575rem] font-display font-bold tracking-[0.0125em] uppercase leading-tight pt-1">CHANGE VIEWPOINT</span>
+          <span className="text-[1.575rem] font-display font-bold tracking-[0.0125em] uppercase leading-tight pt-1">CHANGE VIEWPOINT V2</span>
         </div>
         <div className="flex items-center gap-6 font-mono text-xs leading-normal tracking-wide uppercase">
           <button onClick={toggleTheme} className="hover:opacity-60 transition-opacity">
@@ -1630,112 +1407,74 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                       </button>
                     </div>
 
-                    {/* V75/V81: Item-bound Library Artboard */}
+                    {/* Item-bound Library Artboard — #.정보분석샘플 */}
                     {openLibraryItemId === item.id && (() => {
-                      // [V33] bldgRatio 기반 동적 아트보드 크기 산출
-                      const bldgRatio = (item.parameters as any)?.bldgRatio as { width: number; depth: number; height: number } | undefined;
-                      const W = bldgRatio?.width  ?? 10;
-                      const D = bldgRatio?.depth  ?? 8;
-                      const H = bldgRatio?.height ?? 15;
-                      const gapTotal     = 24;
-                      const PADDING      = 208; // p-6(48) + p-20(160)
-                      const TARGET_SCALE = 30;
-                      const SCALE_MIN    = 20;
-                      const MAX_AW = 2400, MAX_AH = 2000;
-                      const unitsW = 2 * H + W;
-                      const unitsH = 2 * H + D;
-                      const SCALE = Math.max(SCALE_MIN, Math.min(TARGET_SCALE, (MAX_AW - PADDING - gapTotal) / unitsW, (MAX_AH - PADDING - gapTotal) / unitsH));
-                      const artboardW = Math.ceil(unitsW * SCALE + gapTotal + PADDING);
-                      const TITLE_RESERVE = 40; // grid의 mt-10(40px) 마진 보정
-                      const artboardH = Math.ceil(unitsH * SCALE + gapTotal + PADDING + TITLE_RESERVE);
+                      const resolvedReport = (item.type === 'generated' && item.motherId)
+                        ? canvasItems.find((i: CanvasItem) => i.id === item.motherId)?.parameters?.analysisReport
+                        : item.parameters?.analysisReport;
+                      const s1 = resolvedReport?.section1 || {};
+                      const s2 = resolvedReport?.section2 || {};
+                      const s3 = resolvedReport?.section3 || {};
+                      const scale = 1 / (canvasZoom / 100);
                       return (
                       <div
-                        className={`absolute flex bg-white/90 dark:bg-[#1E1E1E]/90 backdrop-blur-xl shadow-xl rounded-2xl p-6 ${canvasMode === 'pan' ? 'pointer-events-none' : 'pointer-events-auto'}`}
-                        style={{
-                          left: `calc(100% + 12px)`,
-                          top: 0,
-                          width: `${artboardW}px`,
-                          height: `${artboardH}px`,
-                          border: 'none',
-                        }}
+                        className={`absolute bg-white/95 dark:bg-[#1E1E1E]/95 backdrop-blur-xl shadow-xl rounded-2xl overflow-auto ${canvasMode === 'pan' ? 'pointer-events-none' : 'pointer-events-auto'}`}
+                        style={{ left: `calc(100% + ${12 * scale}px)`, top: 0, width: `${480 * scale}px`, maxHeight: `${600 * scale}px`, fontSize: `${11 * scale}px` }}
                         onPointerDown={(e) => e.stopPropagation()}
                       >
-                        <div className="flex w-full h-full">
-                            {/* Left: Architectural Sheet (V82: Only sheet shown) */}
-                            <div className="flex flex-col w-full h-full relative p-20 items-center justify-center overflow-auto">
-                          {/* Title Overlay */}
-                          <div className="absolute top-10 left-10 z-10 flex flex-col gap-1">
-                            <h2 className="font-['Bebas_Neue'] text-4xl tracking-[0.1em] text-black dark:text-white leading-none">IMAGE TO ELEVATION: UNFOLDED BOX</h2>
-                            <div className="h-[2px] w-full bg-black dark:bg-white/20" />
+                        <div className="p-5 flex flex-col gap-4">
+                          <div>
+                            <div className="font-['Bebas_Neue'] tracking-[0.1em] text-black dark:text-white mb-1" style={{ fontSize: `${18 * scale}px` }}>#.정보분석샘플</div>
+                            <div className="h-[1px] bg-black/20 dark:bg-white/20" />
                           </div>
-
-                          {/* [V11] 5-Panel Orthographic Grid Artboard - UNFOLDED BOX Protocol v7 */}
-                          {(() => {
-                            // [V39] 파생 아이템은 모체의 elevationImages 참조 (single source of truth)
-                            const resolvedElevImgs = (item.type === 'generated' && item.motherId)
-                              ? canvasItems.find(i => i.id === item.motherId)?.parameters?.elevationImages
-                              : item.parameters?.elevationImages;
-                            return resolvedElevImgs ? (() => {
-                            const ei = resolvedElevImgs as any;
-                            // [V33] W, D, H, gapTotal, SCALE은 외부 IIFE(bldgRatio 기반)에서 상속
-
-                            // Grid Areas:
-                            // . rear .
-                            // left top right
-                            // . front .
-
-                            return (
-                              <div 
-                                className="grid gap-[12px] relative mt-10"
-                                style={{
-                                  gridTemplateColumns: `${H * SCALE}px ${W * SCALE}px ${H * SCALE}px`,
-                                  gridTemplateRows: `${H * SCALE}px ${D * SCALE}px ${H * SCALE}px`,
-                                  gridTemplateAreas: `". rear ." "left top right" ". front ."`,
-                                }}
-                              >
-                                {([
-                                  { id: 'top',   area: 'top',   w: W, h: D, r: 0 },
-                                  { id: 'front', area: 'front', w: W, h: H, r: 0 },
-                                  { id: 'rear',  area: 'rear',  w: W, h: H, r: 180 },
-                                  { id: 'left',  area: 'left',  w: D, h: H, r: 90 },
-                                  { id: 'right', area: 'right', w: D, h: H, r: -90 }
-                                ] as const).map(view => (
-                                  <div 
-                                    key={view.id} 
-                                    className="relative flex items-center justify-center min-w-0 min-h-0"
-                                    style={{ gridArea: view.area }}
-                                  >
-                                    <div 
-                                      className="relative bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded overflow-hidden" 
-                                      style={{ 
-                                        width: view.w * SCALE, 
-                                        height: view.h * SCALE,
-                                        transform: `rotate(${view.r}deg)`,
-                                        transformOrigin: 'center center'
-                                      }}
-                                    >
-                                      {ei[view.id] ? (
-                                        <img src={ei[view.id]} className="w-full h-full object-contain block" alt={view.id} />
-                                      ) : (
-                                        <div className="w-full h-full flex items-center justify-center opacity-20 font-mono text-[10px]">INFERRING...</div>
-                                      )}
-                                    </div>
-                                    
-                                  </div>
-                                ))}
+                          {resolvedReport ? (
+                            <>
+                              {/* Section 1 */}
+                              <div>
+                                <div className="font-mono font-bold uppercase tracking-widest opacity-60 mb-2" style={{ fontSize: `${9 * scale}px` }}>섹션 1. 광학 및 시점 파라미터</div>
+                                <table className="w-full border-collapse">
+                                  <tbody>
+                                    {[['촬영 시점', s1.viewpoint], ['방위각', s1.azimuth], ['촬영 고도', s1.altitude], ['투시 왜곡', s1.perspective], ['센서 포맷', s1.sensor], ['초점 거리', s1.focal_length], ['광원 및 날씨', s1.lighting], ['대비 강도', s1.contrast]].map(([k, v]) => (
+                                      <tr key={k} className="border-b border-black/5 dark:border-white/5">
+                                        <td className="font-mono opacity-50 py-1 pr-3 whitespace-nowrap">{k}</td>
+                                        <td className="font-mono font-bold py-1">{v || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
                               </div>
-                            );
-                          })()
-                          : item.parameters?.architecturalSheetImage ? (
-                                <div className="relative w-full h-full flex items-center justify-center p-4">
-                                  <img src={item.parameters.architecturalSheetImage} className="max-w-full max-h-full object-contain mix-blend-multiply dark:mix-blend-screen" alt="Site Plan" />
-                                </div>
-                                ) : (
-                                    <div className="w-full h-full flex items-center justify-center text-center p-4">
-                                      <p className="font-mono opacity-40 uppercase tracking-widest" style={{ fontSize: `${14 / (canvasZoom / 100)}px`}}>No Architectural Sheet Generated</p>
-                                    </div>
-                                )})()}
-                        </div>
+                              {/* Section 2 */}
+                              <div>
+                                <div className="font-mono font-bold uppercase tracking-widest opacity-60 mb-2" style={{ fontSize: `${9 * scale}px` }}>섹션 2. 기하학 및 공간 구조 명세</div>
+                                <table className="w-full border-collapse">
+                                  <tbody>
+                                    {[['외피 시스템', s2.skin], ['내부 파사드', s2.inner], ['외부 파사드', s2.outer], ['기본 매스', s2.mass], ['하층부 1F', s2.base_1f], ['중층부', s2.mid_body], ['상층부 Roof', s2.roof]].map(([k, v]) => (
+                                      <tr key={k} className="border-b border-black/5 dark:border-white/5">
+                                        <td className="font-mono opacity-50 py-1 pr-3 whitespace-nowrap">{k}</td>
+                                        <td className="font-mono font-bold py-1">{v || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              {/* Section 3 */}
+                              <div>
+                                <div className="font-mono font-bold uppercase tracking-widest opacity-60 mb-2" style={{ fontSize: `${9 * scale}px` }}>섹션 3. 개념 및 시각적 속성</div>
+                                <table className="w-full border-collapse">
+                                  <tbody>
+                                    {[['디자인 알고리즘', s3.design_algorithm], ['주조색', s3.color_palette], ['형태 모티브', s3.form_motif], ['형태적 대비', s3.form_contrast], ['감성적 대비', s3.mood_contrast]].map(([k, v]) => (
+                                      <tr key={k} className="border-b border-black/5 dark:border-white/5">
+                                        <td className="font-mono opacity-50 py-1 pr-3 whitespace-nowrap">{k}</td>
+                                        <td className="font-mono font-bold py-1">{v || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="font-mono opacity-40 uppercase tracking-widest text-center py-8" style={{ fontSize: `${10 * scale}px` }}>No Analysis Data — Run Analysis First</div>
+                          )}
                         </div>
                       </div>
                     ); })()}
@@ -1795,52 +1534,122 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                 <div className={`flex flex-col h-full overflow-y-auto transition-opacity duration-200 ${isRightPanelOpen ? 'opacity-100 delay-150' : 'opacity-0'}`}>
                 
                   {/* V25: Dot Navigation Removed */}
-                  <div className="pt-6 pb-2" />
+                  <div className="pt-1.5 pb-0" />
                 
-                  <div className="flex flex-col gap-5 p-5 flex-1">
-                    {/* V25: VIEWPOINT Label + Diagram */}
+                  <div className="flex flex-col gap-4 p-5 flex-1">
+                    {/* Viewpoint Diagram */}
                     <div className="flex flex-col">
                       <div className="font-mono text-xs font-bold tracking-wide uppercase mb-3 opacity-70">Viewpoint</div>
-                      <SitePlanDiagram 
-                        angle={ANGLES[angleIndex]} 
-                        lens={LENSES[lensIndex].value} 
+                      <SitePlanDiagram
+                        angle={
+                          selectedView === 'birdEye' ? birdEyeDirection :
+                          selectedView === 'eyeLevel' ? eyeLevelDirection :
+                          selectedView === 'rightSide' ? rightSideDirection :
+                          '06:00'
+                        }
+                        lens={selectedView === 'top' ? 24 : selectedView === 'front' || selectedView === 'rightSide' ? 50 : 24}
                         isAnalyzing={isAnalyzing}
                         analysisStep={analysisStep}
-                        visibleV0Index={visibleV0Index}
+                        visibleV0Index={null}
                       />
                     </div>
-                    
-                    <div className="flex flex-col mt-2 space-y-5">
-                      {/* Controls */}
-                      <div>
-                        <div className="flex justify-between font-mono text-xs leading-normal tracking-wide mb-1.5">
-                          <span className="opacity-70 uppercase tracking-widest">Angle</span>
-                          <span className="font-bold">{ANGLES[angleIndex]}</span>
-                        </div>
-                        <input type="range" min="0" max={ANGLES.length - 1} step="1" value={angleIndex} onChange={(e) => setAngleIndex(Number(e.target.value))} className="w-full accent-black dark:accent-white cursor-pointer" />
+
+                    {/* Analysis Result Summary */}
+                    {analyzedOpticalParams && (
+                      <div className="flex flex-col gap-1 font-mono text-[10px] opacity-60 border-t border-black/10 dark:border-white/10 pt-3">
+                        <div className="font-bold uppercase tracking-widest mb-1 opacity-100">Analysis</div>
+                        <div className="flex justify-between"><span>Angle</span><span className="font-bold">{analyzedOpticalParams.angle}</span></div>
+                        <div className="flex justify-between"><span>Altitude</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams.altitude}</span></div>
+                        <div className="flex justify-between"><span>Lens</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams.lens}</span></div>
                       </div>
-                      <div>
-                        <div className="flex justify-between font-mono text-xs leading-normal tracking-wide mb-1.5">
-                          <span className="opacity-70 uppercase tracking-widest">Altitude</span>
-                          <span className="font-bold">{ALTITUDES[altitudeIndex].label}</span>
-                        </div>
-                        <input type="range" min="0" max={ALTITUDES.length-1} step="1" value={altitudeIndex} onChange={(e) => setAltitudeIndex(Number(e.target.value))} className="w-full accent-black dark:accent-white cursor-pointer" />
+                    )}
+
+                    {/* View Selection */}
+                    {(analyzedOpticalParams || canvasItems.find(i => i.id === selectedItemId)?.type === 'generated') && (
+                      <div className="flex flex-col gap-2 border-t border-black/10 dark:border-white/10 pt-3">
+                        <div className="font-mono text-xs font-bold tracking-wide uppercase opacity-70 mb-1">View</div>
+                        {(['birdEye', 'eyeLevel', 'front', 'rightSide', 'top'] as ViewType[]).map((v) => {
+                          const label = v === 'birdEye' ? '조감투시뷰' : v === 'eyeLevel' ? '아이레벨투시뷰' : v === 'front' ? '정면뷰' : v === 'rightSide' ? '우측면뷰 / 좌측면뷰' : '탑뷰';
+                          return (
+                            <button
+                              key={v}
+                              onClick={() => setSelectedView(v)}
+                              className={`w-full py-1.5 font-mono text-xs tracking-wide uppercase border transition-all ${selectedView === v ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+
+                        {/* Sub-options */}
+                        {selectedView === 'birdEye' && (
+                          <div className="flex gap-2 mt-1">
+                            {(['04:30', '07:30'] as const).map((dir) => (
+                              <button
+                                key={dir}
+                                onClick={() => setBirdEyeDirection(dir)}
+                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${birdEyeDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                              >
+                                {dir}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {selectedView === 'eyeLevel' && (
+                          <div className="flex gap-2 mt-1">
+                            {(['04:30', '07:30'] as const).map((dir) => (
+                              <button
+                                key={dir}
+                                onClick={() => setEyeLevelDirection(dir)}
+                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${eyeLevelDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                              >
+                                {dir}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {selectedView === 'front' && (
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest whitespace-nowrap">Altitude (m)</span>
+                            <input
+                              type="number"
+                              value={frontAltitude}
+                              onChange={(e) => setFrontAltitude(e.target.value)}
+                              className="flex-1 border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 text-right focus:outline-none focus:border-black dark:focus:border-white"
+                              min="0"
+                            />
+                          </div>
+                        )}
+                        {selectedView === 'rightSide' && (
+                          <>
+                            <div className="flex gap-2 mt-1">
+                              {(['03:00', '09:00'] as const).map((dir) => (
+                                <button
+                                  key={dir}
+                                  onClick={() => setRightSideDirection(dir)}
+                                  className={`flex-1 py-1 font-mono text-[10px] border transition-all ${rightSideDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                                >
+                                  {dir}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest whitespace-nowrap">Altitude (m)</span>
+                              <input
+                                type="number"
+                                value={rightSideAltitude}
+                                onChange={(e) => setRightSideAltitude(e.target.value)}
+                                className="flex-1 border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 text-right focus:outline-none focus:border-black dark:focus:border-white"
+                                min="0"
+                              />
+                            </div>
+                          </>
+                        )}
+                        {selectedView === 'top' && (
+                          <div className="font-mono text-[10px] opacity-50 text-center mt-1">06:00 / 300m / 24mm</div>
+                        )}
                       </div>
-                      <div>
-                        <div className="flex justify-between font-mono text-xs leading-normal tracking-wide mb-1.5">
-                          <span className="opacity-70 uppercase tracking-widest">Lens</span>
-                          <span className="font-bold">{LENSES[lensIndex].label}</span>
-                        </div>
-                        <input type="range" min="0" max={LENSES.length-1} step="1" value={lensIndex} onChange={(e) => setLensIndex(Number(e.target.value))} className="w-full accent-black dark:accent-white cursor-pointer" />
-                      </div>
-                      <div>
-                        <div className="flex justify-between font-mono text-xs leading-normal tracking-wide mb-1.5">
-                          <span className="opacity-70 uppercase tracking-widest">Time</span>
-                          <span className="font-bold">{TIMES[timeIndex]}</span>
-                        </div>
-                        <input type="range" min="0" max={TIMES.length-1} step="1" value={timeIndex} onChange={(e) => setTimeIndex(Number(e.target.value))} className="w-full accent-black dark:accent-white cursor-pointer" />
-                      </div>
-                    </div>
+                    )}
                   </div>
 
                 {/* BOTTOM ACTION */}
@@ -1850,9 +1659,9 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                     if (!selItem) return null;
                     if (selItem.parameters?.analyzedOpticalParams || selItem.type === 'generated') {
                       return (
-                        <button 
+                        <button
                           onClick={handleGenerate}
-                          disabled={isGenerating}
+                          disabled={isGenerating || !selectedView}
                           className="relative w-full border border-black dark:border-white py-2 font-display tracking-widest uppercase hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <span className={`block transition-opacity ${isGenerating ? 'opacity-0' : 'opacity-100'}`}>Generate</span>
@@ -1865,7 +1674,7 @@ ${prompt ? `\nAdditional instruction: ${prompt}` : ''}
                       );
                     }
                     return (
-                      <button 
+                      <button
                         onClick={() => analyzeViewpoint(selItem.src, selItem.id)}
                         disabled={isAnalyzing}
                         className="w-full border border-black dark:border-white py-2 font-display tracking-widest uppercase hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-all disabled:opacity-30"
