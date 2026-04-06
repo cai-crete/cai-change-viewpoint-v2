@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Moon, Sun, Loader2, Search, Hand, MousePointer2, Compass, Book, Wand2, Sparkles, Trash2, Undo, Download, RotateCcw } from 'lucide-react';
+import { Upload, Moon, Sun, Loader2, Search, Hand, MousePointer2, Compass, Book, Wand2, Sparkles, Trash2, Undo, Redo, Download, RotateCcw } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { ANALYSIS, IMAGE_GEN, ANALYSIS_FALLBACK, IMAGE_GEN_FALLBACK } from './constants';
 
@@ -21,7 +21,7 @@ const SitePlanDiagram = ({ angle, lens, isAnalyzing, analysisStep, visibleV0Inde
 }) => {
   // Mapping clock-face strings to degrees
   const angleMap: Record<string, number> = {
-    '12:00': 0, '1:30': 45, '3:00': 90, '04:30': 135,
+    '12:00': 0, '1:30': 45, '3:00': 90, '03:00': 90, '04:30': 135,
     '06:00': 180, '07:30': 225, '09:00': 270, '10:30': 315
   };
 
@@ -139,6 +139,7 @@ export default function App() {
   const dragStartRef = useRef({ x: 0, y: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0, itemX: 0, itemY: 0 });
   const resizeCornerRef = useRef({ dx: 1, dy: 1 });
+  const preDragStateRef = useRef<CanvasItem[] | null>(null);
   // Keep State for render (cursor CSS)
   const [isDraggingItem, setIsDraggingItem] = useState(false);
   const [isResizingItem, setIsResizingItem] = useState(false);
@@ -176,14 +177,24 @@ export default function App() {
   // V75: Item-bound Library State
   const [openLibraryItemId, setOpenLibraryItemId] = useState<string | null>(null);
 
-  // V75: History State for Undo
+  // V75: History State for Undo / Redo
   const [historyStates, setHistoryStates] = useState<CanvasItem[][]>([]);
+  const [futureStates, setFutureStates] = useState<CanvasItem[][]>([]);
+
   const handleUndo = () => {
-    if (historyStates.length > 0) {
-      setCanvasItems(historyStates[historyStates.length - 1]);
-      setHistoryStates(prev => prev.slice(0, -1));
-      setSelectedItemId(null); // Optional: clear selection on undo
-    }
+    if (historyStates.length === 0) return;
+    setFutureStates(prev => [...prev, canvasItems]);
+    setCanvasItems(historyStates[historyStates.length - 1]);
+    setHistoryStates(prev => prev.slice(0, -1));
+    setSelectedItemId(null);
+  };
+
+  const handleRedo = () => {
+    if (futureStates.length === 0) return;
+    setHistoryStates(prev => [...prev, canvasItems]);
+    setCanvasItems(futureStates[futureStates.length - 1]);
+    setFutureStates(prev => prev.slice(0, -1));
+    setSelectedItemId(null);
   };
 
   // Touch State Refs
@@ -274,13 +285,15 @@ export default function App() {
 
   const zoomStep = (dir: 1 | -1) => {
     setCanvasZoom(prev => {
-      if (dir === 1) {
-        const next = ZOOM_STEPS_BUTTON.find(v => v > prev);
-        return next !== undefined ? next : 150;
-      } else {
-        const next = [...ZOOM_STEPS_BUTTON].reverse().find(v => v < prev);
-        return next !== undefined ? next : 10;
-      }
+      const newZoom = dir === 1
+        ? (ZOOM_STEPS_BUTTON.find(v => v > prev) ?? 150)
+        : ([...ZOOM_STEPS_BUTTON].reverse().find(v => v < prev) ?? 10);
+      // Adjust offset to keep current viewport center stable
+      setCanvasOffset(prevOffset => ({
+        x: prevOffset.x * (newZoom / prev),
+        y: prevOffset.y * (newZoom / prev)
+      }));
+      return newZoom;
     });
   };
 
@@ -401,6 +414,7 @@ export default function App() {
             setIsResizingItem(true);
             resizeCornerRef.current = { dx: corner.dx, dy: corner.dy };
             resizeStartRef.current = { x: coords.x, y: coords.y, width: item.width, height: item.height, itemX: item.x, itemY: item.y };
+            preDragStateRef.current = canvasItems;
             e.currentTarget.setPointerCapture(e.pointerId);
             return;
           }
@@ -419,6 +433,7 @@ export default function App() {
       isDraggingItemRef.current = true;
       setIsDraggingItem(true);
       dragOffsetRef.current = { x: coords.x - clickedItem.x, y: coords.y - clickedItem.y };
+      preDragStateRef.current = canvasItems;
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
@@ -473,12 +488,30 @@ export default function App() {
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    const wasDraggingItem = isDraggingItemRef.current;
+    const wasResizing = isResizingItemRef.current;
     isDraggingPanRef.current = false;
     isDraggingItemRef.current = false;
     isResizingItemRef.current = false;
     setIsDraggingPan(false);
     setIsDraggingItem(false);
     setIsResizingItem(false);
+    // Commit drag/resize to history if position actually changed
+    if ((wasDraggingItem || wasResizing) && preDragStateRef.current) {
+      const before = preDragStateRef.current;
+      setCanvasItems(current => {
+        const changed = current.some((item, i) =>
+          before[i]?.x !== item.x || before[i]?.y !== item.y ||
+          before[i]?.width !== item.width || before[i]?.height !== item.height
+        );
+        if (changed) {
+          setHistoryStates(h => [...h, before]);
+          setFutureStates([]);
+        }
+        return current;
+      });
+      preDragStateRef.current = null;
+    }
     if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     }
@@ -572,6 +605,7 @@ export default function App() {
           };
 
           setHistoryStates(prevH => [...prevH, canvasItems]);
+          setFutureStates([]);
           setCanvasItems(prev => [...prev, newItem]);
           setSelectedItemId(newItemId);
 
@@ -1098,6 +1132,7 @@ ${analysisContext}
                 };
                 setCanvasItems(prev => {
                   setHistoryStates(prevH => [...prevH, prev]);
+                  setFutureStates([]);
                   let currentX = sourceItem.x + sourceItem.width + 12;
                   let currentY = sourceItem.y;
                   let hasOverlap = true;
@@ -1210,15 +1245,23 @@ ${analysisContext}
               <Hand size={18} />
             </button>
 
-            {/* V75: Undo Button */}
+            {/* V75: Undo / Redo Buttons */}
             <div className="w-6 h-[1px] bg-black/10 dark:bg-white/10 my-1" />
-            <button 
+            <button
               onClick={handleUndo}
               disabled={historyStates.length === 0}
               className={`w-9 h-9 flex items-center justify-center rounded-full transition-colors ${historyStates.length === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}
               title="Undo"
             >
               <Undo size={18} />
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={futureStates.length === 0}
+              className={`w-9 h-9 flex items-center justify-center rounded-full transition-colors ${futureStates.length === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}
+              title="Redo"
+            >
+              <Redo size={18} />
             </button>
           </div>
 
@@ -1396,6 +1439,7 @@ ${analysisContext}
                       <button 
                         onClick={() => {
                           setHistoryStates(prevH => [...prevH, canvasItems]);
+                          setFutureStates([]);
                           setCanvasItems(prev => prev.filter(i => i.id !== item.id && i.motherId !== item.id));
                           setSelectedItemId(null);
                         }}
@@ -1418,13 +1462,13 @@ ${analysisContext}
                       const scale = 1 / (canvasZoom / 100);
                       return (
                       <div
-                        className={`absolute bg-white/95 dark:bg-[#1E1E1E]/95 backdrop-blur-xl shadow-xl rounded-2xl overflow-auto ${canvasMode === 'pan' ? 'pointer-events-none' : 'pointer-events-auto'}`}
-                        style={{ left: `calc(100% + ${12 * scale}px)`, top: 0, width: `${480 * scale}px`, maxHeight: `${600 * scale}px`, fontSize: `${11 * scale}px` }}
+                        className={`absolute bg-white/95 dark:bg-[#1E1E1E]/95 backdrop-blur-xl shadow-xl rounded-2xl overflow-visible ${canvasMode === 'pan' ? 'pointer-events-none' : 'pointer-events-auto'}`}
+                        style={{ left: `calc(100% + ${12 * scale}px)`, top: 0, width: `${480 * scale}px`, fontSize: `${11 * scale}px` }}
                         onPointerDown={(e) => e.stopPropagation()}
                       >
                         <div className="p-5 flex flex-col gap-4">
                           <div>
-                            <div className="font-['Bebas_Neue'] tracking-[0.1em] text-black dark:text-white mb-1" style={{ fontSize: `${18 * scale}px` }}>#.정보분석샘플</div>
+                            <div className="font-['Bebas_Neue'] tracking-[0.1em] text-black dark:text-white mb-1" style={{ fontSize: `${18 * scale}px` }}>ANALYSIS REPORT</div>
                             <div className="h-[1px] bg-black/20 dark:bg-white/20" />
                           </div>
                           {resolvedReport ? (
@@ -1531,12 +1575,12 @@ ${analysisContext}
                 className="h-full w-[284px] rounded-[20px] flex flex-col overflow-hidden pointer-events-auto border border-black/50 shadow-xl dark:border-white/50 bg-white/90 dark:bg-black/90 backdrop-blur-sm"
               >
                 {/* Sidebar Content Wrapper */}
-                <div className={`flex flex-col h-full overflow-y-auto transition-opacity duration-200 ${isRightPanelOpen ? 'opacity-100 delay-150' : 'opacity-0'}`}>
-                
+                <div className={`flex flex-col h-full overflow-hidden transition-opacity duration-200 ${isRightPanelOpen ? 'opacity-100 delay-150' : 'opacity-0'}`}>
+
                   {/* V25: Dot Navigation Removed */}
                   <div className="pt-1.5 pb-0" />
-                
-                  <div className="flex flex-col gap-4 p-5 flex-1">
+
+                  <div className="flex flex-col gap-4 p-5 flex-1 min-h-0">
                     {/* Viewpoint Diagram */}
                     <div className="flex flex-col">
                       <div className="font-mono text-xs font-bold tracking-wide uppercase mb-3 opacity-70">Viewpoint</div>
@@ -1554,106 +1598,110 @@ ${analysisContext}
                       />
                     </div>
 
-                    {/* Analysis Result Summary */}
-                    {analyzedOpticalParams && (
-                      <div className="flex flex-col gap-1 font-mono text-[10px] opacity-60 border-t border-black/10 dark:border-white/10 pt-3">
-                        <div className="font-bold uppercase tracking-widest mb-1 opacity-100">Analysis</div>
-                        <div className="flex justify-between"><span>Angle</span><span className="font-bold">{analyzedOpticalParams.angle}</span></div>
-                        <div className="flex justify-between"><span>Altitude</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams.altitude}</span></div>
-                        <div className="flex justify-between"><span>Lens</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams.lens}</span></div>
-                      </div>
-                    )}
+                    {/* Analysis Result Summary — always visible */}
+                    <div className="flex flex-col gap-1 font-mono text-[10px] opacity-60 border-t border-black/10 dark:border-white/10 pt-3">
+                      <div className="font-bold uppercase tracking-widest mb-1 opacity-100">Analysis</div>
+                      <div className="flex justify-between"><span>Angle</span><span className="font-bold">{analyzedOpticalParams?.angle ?? 'none'}</span></div>
+                      <div className="flex justify-between"><span>Altitude</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams?.altitude ?? 'none'}</span></div>
+                      <div className="flex justify-between"><span>Lens</span><span className="font-bold truncate ml-2 text-right">{analyzedOpticalParams?.lens ?? 'none'}</span></div>
+                    </div>
 
-                    {/* View Selection */}
-                    {(analyzedOpticalParams || canvasItems.find(i => i.id === selectedItemId)?.type === 'generated') && (
-                      <div className="flex flex-col gap-2 border-t border-black/10 dark:border-white/10 pt-3">
-                        <div className="font-mono text-xs font-bold tracking-wide uppercase opacity-70 mb-1">View</div>
-                        {(['birdEye', 'eyeLevel', 'front', 'rightSide', 'top'] as ViewType[]).map((v) => {
-                          const label = v === 'birdEye' ? '조감투시뷰' : v === 'eyeLevel' ? '아이레벨투시뷰' : v === 'front' ? '정면뷰' : v === 'rightSide' ? '우측면뷰 / 좌측면뷰' : '탑뷰';
-                          return (
+                    {/* View Selection — always visible, internal scroll */}
+                    <div className="flex flex-col gap-2 border-t border-black/10 dark:border-white/10 pt-3 overflow-y-auto [&::-webkit-scrollbar]:hidden flex-1 min-h-0">
+                      <div className="font-mono text-xs font-bold tracking-wide uppercase opacity-70 mb-1">View</div>
+                      {(['birdEye', 'eyeLevel', 'front', 'rightSide', 'top'] as ViewType[]).map((v) => {
+                        const label = v === 'birdEye' ? "Bird's eye view" : v === 'eyeLevel' ? 'Perspective view' : v === 'front' ? 'Front' : v === 'rightSide' ? 'Right / Left' : 'Top view';
+                        return (
+                          <button
+                            key={v}
+                            onClick={() => setSelectedView(v)}
+                            className={`w-full py-1.5 font-mono text-xs tracking-wide uppercase border transition-all ${selectedView === v ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+
+                      {/* Sub-options */}
+                      {selectedView === 'birdEye' && (
+                        <div className="flex gap-2 mt-1">
+                          {(['04:30', '07:30'] as const).map((dir) => (
                             <button
-                              key={v}
-                              onClick={() => setSelectedView(v)}
-                              className={`w-full py-1.5 font-mono text-xs tracking-wide uppercase border transition-all ${selectedView === v ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                              key={dir}
+                              onClick={() => setBirdEyeDirection(dir)}
+                              className={`flex-1 py-1 font-mono text-[10px] border transition-all ${birdEyeDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
                             >
-                              {label}
+                              {dir}
                             </button>
-                          );
-                        })}
-
-                        {/* Sub-options */}
-                        {selectedView === 'birdEye' && (
+                          ))}
+                        </div>
+                      )}
+                      {selectedView === 'eyeLevel' && (
+                        <div className="flex gap-2 mt-1">
+                          {(['04:30', '07:30'] as const).map((dir) => (
+                            <button
+                              key={dir}
+                              onClick={() => setEyeLevelDirection(dir)}
+                              className={`flex-1 py-1 font-mono text-[10px] border transition-all ${eyeLevelDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                            >
+                              {dir}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {selectedView === 'front' && (
+                        <div className="flex flex-col gap-1 mt-1">
+                          <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Altitude</span>
+                          <select
+                            value={frontAltitude}
+                            onChange={(e) => setFrontAltitude(e.target.value)}
+                            className="w-full border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 focus:outline-none focus:border-black dark:focus:border-white dark:text-white"
+                          >
+                            <option value="0">0m</option>
+                            <option value="1.6">1.6m</option>
+                            <option value="10">10m</option>
+                            <option value="50">50m</option>
+                            <option value="150">150m</option>
+                          </select>
+                        </div>
+                      )}
+                      {selectedView === 'rightSide' && (
+                        <>
                           <div className="flex gap-2 mt-1">
-                            {(['04:30', '07:30'] as const).map((dir) => (
+                            {(['03:00', '09:00'] as const).map((dir) => (
                               <button
                                 key={dir}
-                                onClick={() => setBirdEyeDirection(dir)}
-                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${birdEyeDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                                onClick={() => setRightSideDirection(dir)}
+                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${rightSideDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
                               >
                                 {dir}
                               </button>
                             ))}
                           </div>
-                        )}
-                        {selectedView === 'eyeLevel' && (
-                          <div className="flex gap-2 mt-1">
-                            {(['04:30', '07:30'] as const).map((dir) => (
-                              <button
-                                key={dir}
-                                onClick={() => setEyeLevelDirection(dir)}
-                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${eyeLevelDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
-                              >
-                                {dir}
-                              </button>
-                            ))}
+                          <div className="flex flex-col gap-1 mt-1">
+                            <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Altitude</span>
+                            <select
+                              value={rightSideAltitude}
+                              onChange={(e) => setRightSideAltitude(e.target.value)}
+                              className="w-full border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 focus:outline-none focus:border-black dark:focus:border-white dark:text-white"
+                            >
+                              <option value="0">0m</option>
+                              <option value="1.6">1.6m</option>
+                              <option value="10">10m</option>
+                              <option value="50">50m</option>
+                              <option value="150">150m</option>
+                            </select>
                           </div>
-                        )}
-                        {selectedView === 'front' && (
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest whitespace-nowrap">Altitude (m)</span>
-                            <input
-                              type="number"
-                              value={frontAltitude}
-                              onChange={(e) => setFrontAltitude(e.target.value)}
-                              className="flex-1 border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 text-right focus:outline-none focus:border-black dark:focus:border-white"
-                              min="0"
-                            />
-                          </div>
-                        )}
-                        {selectedView === 'rightSide' && (
-                          <>
-                            <div className="flex gap-2 mt-1">
-                              {(['03:00', '09:00'] as const).map((dir) => (
-                                <button
-                                  key={dir}
-                                  onClick={() => setRightSideDirection(dir)}
-                                  className={`flex-1 py-1 font-mono text-[10px] border transition-all ${rightSideDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
-                                >
-                                  {dir}
-                                </button>
-                              ))}
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest whitespace-nowrap">Altitude (m)</span>
-                              <input
-                                type="number"
-                                value={rightSideAltitude}
-                                onChange={(e) => setRightSideAltitude(e.target.value)}
-                                className="flex-1 border border-black/30 dark:border-white/30 bg-transparent font-mono text-xs py-1 px-2 text-right focus:outline-none focus:border-black dark:focus:border-white"
-                                min="0"
-                              />
-                            </div>
-                          </>
-                        )}
-                        {selectedView === 'top' && (
-                          <div className="font-mono text-[10px] opacity-50 text-center mt-1">06:00 / 300m / 24mm</div>
-                        )}
-                      </div>
-                    )}
+                        </>
+                      )}
+                      {selectedView === 'top' && (
+                        <div className="font-mono text-[10px] opacity-50 text-center mt-1">06:00 / 300m / 24mm</div>
+                      )}
+                    </div>
                   </div>
 
                 {/* BOTTOM ACTION */}
-                <div className="p-5 mt-auto border-t border-black/10 dark:border-white/10">
+                <div className="p-5 mt-auto">
                   {(() => {
                     const selItem = canvasItems.find(i => i.id === selectedItemId);
                     if (!selItem) return null;
