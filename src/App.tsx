@@ -1613,7 +1613,7 @@ ${analysisContext}
                     <div className="flex flex-col gap-2 border-t border-black/10 dark:border-white/10 pt-3 overflow-y-auto [&::-webkit-scrollbar]:hidden flex-1 min-h-0">
                       <div className="font-mono text-xs font-bold tracking-wide uppercase opacity-70 mb-1">View</div>
                       {(['birdEye', 'eyeLevel', 'front', 'rightSide', 'top'] as ViewType[]).map((v) => {
-                        const label = v === 'birdEye' ? "Bird's eye view" : v === 'eyeLevel' ? 'Perspective view' : v === 'front' ? 'Front' : v === 'rightSide' ? 'Right / Left' : 'Top view';
+                        const label = v === 'birdEye' ? "Bird's eye view" : v === 'eyeLevel' ? 'Perspective view' : v === 'front' ? 'Front View' : v === 'rightSide' ? 'Right / Left View' : 'Top view';
                         return (
                           <button
                             key={v}
@@ -1627,29 +1627,35 @@ ${analysisContext}
 
                       {/* Sub-options */}
                       {selectedView === 'birdEye' && (
-                        <div className="flex gap-2 mt-1">
-                          {(['04:30', '07:30'] as const).map((dir) => (
-                            <button
-                              key={dir}
-                              onClick={() => setBirdEyeDirection(dir)}
-                              className={`flex-1 py-1 font-mono text-[10px] border transition-all ${birdEyeDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
-                            >
-                              {dir}
-                            </button>
-                          ))}
+                        <div className="flex flex-col gap-1 mt-1">
+                          <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Angle</span>
+                          <div className="flex gap-2">
+                            {(['04:30', '07:30'] as const).map((dir) => (
+                              <button
+                                key={dir}
+                                onClick={() => setBirdEyeDirection(dir)}
+                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${birdEyeDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                              >
+                                {dir}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                       {selectedView === 'eyeLevel' && (
-                        <div className="flex gap-2 mt-1">
-                          {(['04:30', '07:30'] as const).map((dir) => (
-                            <button
-                              key={dir}
-                              onClick={() => setEyeLevelDirection(dir)}
-                              className={`flex-1 py-1 font-mono text-[10px] border transition-all ${eyeLevelDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
-                            >
-                              {dir}
-                            </button>
-                          ))}
+                        <div className="flex flex-col gap-1 mt-1">
+                          <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Angle</span>
+                          <div className="flex gap-2">
+                            {(['04:30', '07:30'] as const).map((dir) => (
+                              <button
+                                key={dir}
+                                onClick={() => setEyeLevelDirection(dir)}
+                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${eyeLevelDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                              >
+                                {dir}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                       {selectedView === 'front' && (
@@ -1670,16 +1676,19 @@ ${analysisContext}
                       )}
                       {selectedView === 'rightSide' && (
                         <>
-                          <div className="flex gap-2 mt-1">
-                            {(['03:00', '09:00'] as const).map((dir) => (
-                              <button
-                                key={dir}
-                                onClick={() => setRightSideDirection(dir)}
-                                className={`flex-1 py-1 font-mono text-[10px] border transition-all ${rightSideDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
-                              >
-                                {dir}
-                              </button>
-                            ))}
+                          <div className="flex flex-col gap-1 mt-1">
+                            <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Angle</span>
+                            <div className="flex gap-2">
+                              {(['03:00', '09:00'] as const).map((dir) => (
+                                <button
+                                  key={dir}
+                                  onClick={() => setRightSideDirection(dir)}
+                                  className={`flex-1 py-1 font-mono text-[10px] border transition-all ${rightSideDirection === dir ? 'border-black dark:border-white bg-black text-white dark:bg-white dark:text-black' : 'border-black/20 dark:border-white/20 hover:border-black dark:hover:border-white'}`}
+                                >
+                                  {dir}
+                                </button>
+                              ))}
+                            </div>
                           </div>
                           <div className="flex flex-col gap-1 mt-1">
                             <span className="font-mono text-[10px] opacity-60 uppercase tracking-widest">Altitude</span>
